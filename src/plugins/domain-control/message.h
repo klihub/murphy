@@ -46,6 +46,10 @@ typedef enum {
     MSG_TYPE_NAK,
     MSG_TYPE_INVOKE,
     MSG_TYPE_RETURN,
+    MSG_TYPE_CREATE,
+    MSG_TYPE_DROP,
+    MSG_TYPE_SUBSCRIBE,
+    MSG_TYPE_UNSUBSCRIBE
 } msg_type_t;
 
 typedef enum {
@@ -58,6 +62,7 @@ typedef enum {
     MSGTAG_NTABLE   = 0x4,           /* number of owned tables */
     MSGTAG_NWATCH   = 0x5,           /* number of watched tables */
     MSGTAG_TBLNAME  = 0x6,           /* table name */
+    MSGTAG_TBLID    = 0x7,           /* table id */
     MSGTAG_COLUMNS  = 0x8,           /* column definitions/list */
     MSGTAG_INDEX    = 0x9,           /* index definition */
     MSGTAG_WHERE    = 0xa,           /* where clause for select */
@@ -70,10 +75,9 @@ typedef enum {
     /* fixed tags in data notification messages */
     MSGTAG_NCHANGE = 0x3,            /* number of tables in notification */
     MSGTAG_NTOTAL  = 0x4,            /* total columns in notification */
-    MSGTAG_TBLID   = 0x5,            /* table id */
     MSGTAG_NROW    = 0x6,            /* number of table rows */
-    MSGTAG_NCOL    = 0x7,            /* number of columns in a row */
-    MSGTAG_DATA    = 0x8,            /* a data column */
+    MSGTAG_NCOL    = 0x8,            /* number of columns in a row */
+    MSGTAG_DATA    = 0x9,            /* a data column */
 
     /* fixed tags in invoke and return messages */
     MSGTAG_METHOD  = 0x3,            /* method name */
@@ -171,19 +175,30 @@ typedef struct {
 
 typedef struct {
     COMMON_MSG_FIELDS;
+    uint32_t  *ids;
+    uint32_t   nid;
+} drop_msg_t;
+
+
+typedef struct {
+    COMMON_MSG_FIELDS;
 } any_msg_t;
 
 
 union msg_u {
-    any_msg_t        any;
-    register_msg_t   reg;
-    unregister_msg_t unreg;
-    set_msg_t        set;
-    notify_msg_t     notify;
-    ack_msg_t        ack;
-    nak_msg_t        nak;
-    invoke_msg_t     invoke;
-    return_msg_t     ret;
+    any_msg_t         any;
+    register_msg_t    reg;
+    unregister_msg_t  unreg;
+    set_msg_t         set;
+    notify_msg_t      notify;
+    ack_msg_t         ack;
+    nak_msg_t         nak;
+    invoke_msg_t      invoke;
+    return_msg_t      ret;
+    register_msg_t    crt;
+    drop_msg_t        drop;
+    register_msg_t    sub;
+    drop_msg_t        unsub;
 };
 
 
@@ -194,9 +209,11 @@ msg_t *json_decode_message(mrp_json_t *msg);
 void msg_free_message(msg_t *msg);
 
 mrp_msg_t *msg_create_notify(void);
-int msg_update_notify(mrp_msg_t *msg, int tblid, mql_result_t *r);
+int msg_update_notify(mrp_msg_t *msg, const char *tblname, int tblid,
+                      mql_result_t *r, const char *columns);
 
 mrp_json_t *json_create_notify(void);
-int json_update_notify(mrp_json_t *msg, int tblid, mql_result_t *r);
+int json_update_notify(mrp_json_t *msg, const char *tblname, int tblid,
+                       mql_result_t *r, const char *columns);
 
 #endif /* __MURPHY_DOMAIN_CONTROL_MESSAGE_H__ */

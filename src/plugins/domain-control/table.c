@@ -40,6 +40,7 @@
 #include <murphy-db/mdb.h>
 
 #include "domain-control.h"
+#include "proxy.h"
 #include "table.h"
 
 #define FAIL(ec, msg) do {                      \
@@ -48,7 +49,9 @@
         goto fail;                              \
     } while (0)
 
-static pep_table_t *lookup_watch_table(pdp_t *pdp, const char *name);
+
+static int instantiate_wildcard_watches(pdp_t *pdp, const char *name);
+
 
 /*
  * proxied and tracked tables
@@ -73,6 +76,8 @@ static void table_change_cb(mqi_event_t *e, void *tptr)
         t->changed = true;
         mrp_debug("table '%s' changed by %s event", t->name, events[e->event]);
     }
+
+
 }
 
 
@@ -156,6 +161,8 @@ static void table_event_cb(mqi_event_t *e, void *user_data)
         return;
     }
 
+    instantiate_wildcard_watches(pdp, name);
+
     t = lookup_watch_table(pdp, name);
 
     if (t != NULL) {
@@ -163,10 +170,15 @@ static void table_event_cb(mqi_event_t *e, void *user_data)
 
         if (e->event == mqi_table_created) {
             t->h = h;
+
+            if (!t->expid && t->exported)
+                t->expid = pdp->expid++;
+
+            introspect_table(t, h);
             add_table_triggers(t);
         }
         else {
-            t->h = MQI_HANDLE_INVALID;
+            invalidate_table(t);
             del_table_triggers(t);
         }
     }
@@ -247,6 +259,7 @@ int init_tables(pdp_t *pdp)
 
     if (open_db(pdp)) {
         mrp_list_init(&pdp->tables);
+        mrp_list_init(&pdp->wildcard);
 
         mrp_clear(&hcfg);
         hcfg.comp = mrp_string_comp;
@@ -282,6 +295,8 @@ int exec_mql(mql_result_type_t type, mql_result_t **resultp,
     va_end(ap);
 
     if (n < (int)sizeof(buf)) {
+        mrp_debug("executing DB query '%s'", buf);
+
         r       = mql_exec_string(type, buf);
         success = (r == NULL || mql_result_is_success(r));
 
@@ -304,47 +319,198 @@ int exec_mql(mql_result_type_t type, mql_result_t **resultp,
 }
 
 
-static int get_table_description(pep_table_t *t)
+const char *describe_mql(char *mql, size_t size, mqi_handle_t h, mql_result_t *r)
 {
-    mqi_column_def_t    columns[MQI_COLUMN_MAX];
-    mrp_domctl_value_t *values = NULL;
-    int                 ncolumn, i;
+    mqi_column_def_t  defs[MQI_COLUMN_MAX], *d;
+    int               ndef, ncol;
+    char             *p;
+    int               n, l, idx, i;
 
-    if (t->h == MQI_HANDLE_INVALID)
-        t->h = mqi_get_table_handle((char *)t->name);
+    if (r == NULL || mql_result_rows_get_row_count(r) < 1)
+        return NULL;
 
-    if (t->h != MQI_HANDLE_INVALID) {
-        ncolumn = mqi_describe(t->h, columns, MRP_ARRAY_SIZE(columns));
+    ndef = mqi_describe(h, defs, MRP_ARRAY_SIZE(defs));
+    ncol = mql_result_rows_get_row_column_count(r);
+    p    = mql;
+    l    = (int)size;
 
-        if (ncolumn > 0) {
-            t->columns = mrp_allocz_array(typeof(*t->columns), ncolumn);
-            t->coldesc = mrp_allocz_array(typeof(*t->coldesc), ncolumn + 1);
+    for (i = 0; i < ncol; i++) {
+        idx = mql_result_rows_get_row_column_index(r, i);
 
-            if (t->columns != NULL && t->coldesc != NULL) {
-                memcpy(t->columns, columns, ncolumn * sizeof(*t->columns));
-                t->ncolumn = ncolumn;
+        if (idx < 0 || idx >= ndef)
+            return NULL;
 
-                for (i = 0; i < t->ncolumn; i++) {
-                    t->coldesc[i].cindex = i;
-                    t->coldesc[i].offset = (int)(ptrdiff_t)&values[i].str;
-                }
+        d = defs + idx;
 
-                t->coldesc[i].cindex = -1;
-                t->coldesc[i].offset = 0;
+        switch (d->type) {
+        case mqi_varchar:
+            n = snprintf(p, l, "%s%s varchar (%d)", i ? ", " : "",
+                         d->name, d->length);
+            break;
+        case mqi_integer:
+            n = snprintf(p, l, "%s%s integer", i ? ", " : "", d->name);
+            break;
 
-                return TRUE;
-            }
+        case mqi_unsignd:
+            n = snprintf(p, l, "%s%s unsigned", i ? ", " : "", d->name);
+            break;
+
+        case mqi_floating:
+            n = snprintf(p, l, "%s%s floating", i ? ", " : "", d->name);
+            break;
+
+        default:
+            return NULL;
         }
+
+        if (n >= l)
+            return NULL;
+
+        p += n;
+        l -= n;
     }
 
-    return FALSE;
+    return mql;
 }
 
 
-int create_proxy_table(pep_table_t *t, int *errcode, const char **errmsg)
+int introspect_table(pep_table_t *t, mqi_handle_t h)
 {
+    mqi_column_def_t    cols[MQI_COLUMN_MAX], *c;
+    int                 ncol;
+    mrp_domctl_value_t *values = NULL;
+    char                mql_columns[4096], *p, *s;
+    int                 i, n, l;
+
+    if (h == MQI_HANDLE_INVALID)
+        h = mqi_get_table_handle((char *)t->name);
+
+    if (h == MQI_HANDLE_INVALID)
+        return TRUE;
+
+    t->h = h;
+
+    ncol = mqi_describe(t->h, cols, MRP_ARRAY_SIZE(cols));
+
+    if (ncol <= 0)
+        return FALSE;
+
+    if (t->ncolumn != 0 && t->ncolumn != ncol)
+        return FALSE;
+
+    if (t->columns == NULL)
+        t->columns = mrp_allocz_array(mqi_column_def_t , ncol);
+
+    if (t->coldesc == NULL)
+        t->coldesc = mrp_allocz_array(mqi_column_desc_t, ncol + 1);
+
+    if (t->columns == NULL || t->coldesc == NULL)
+        return FALSE;
+
+    memcpy(t->columns, cols, ncol * sizeof(*t->columns));
+    t->ncolumn = ncol;
+
+    p = mql_columns;
+    l = sizeof(mql_columns);
+    for (i = 0, c = cols; i < ncol; i++, c++) {
+        t->coldesc[i].cindex = i;
+        t->coldesc[i].offset = (int)(ptrdiff_t)&values[i].str;
+
+        s = i ? "," : "";
+        switch (c->type) {
+        case mqi_varchar:
+            n = snprintf(p, l, "%s%s varchar (%d)", s, c->name, c->length);
+            break;
+
+        case mqi_integer:
+            n = snprintf(p, l, "%s%s integer", s, c->name);
+            break;
+
+        case mqi_unsignd:
+            n = snprintf(p, l, "%s%s unsigned", s, c->name);
+            break;
+
+        case mqi_floating:
+            n = snprintf(p, l, "%s%s floating", s, c->name);
+            break;
+
+        default:
+            return FALSE;
+        }
+
+        if (n >= l - 1)
+            return FALSE;
+
+        p += n;
+        l -= n;
+
+        if (c->flags & MQI_COLUMN_KEY) {
+            t->idx_col   = i;
+            if (t->mql_index == NULL)
+                t->mql_index = mrp_strdup(c->name);
+
+            if (t->mql_index == NULL)
+                return FALSE;
+        }
+    }
+
+    *p = '\0';
+
+    t->coldesc[i].cindex = -1;
+    if (t->mql_columns == NULL)
+        t->mql_columns = mrp_strdup(mql_columns);
+
+    if (t->mql_columns == NULL)
+        return FALSE;
+
+    mrp_debug("table %s (handle 0x%x):", t->name, t->h);
+    mrp_debug("    columns: %s", t->mql_columns);
+    mrp_debug("      index: %s", t->mql_index ? t->mql_index : "<none>");
+
+    return TRUE;
+}
+
+
+void invalidate_table(pep_table_t *t)
+{
+    mrp_free(t->mql_columns);
+    mrp_free(t->mql_index);
+    mrp_free(t->columns);
+    mrp_free(t->coldesc);
+
+    t->h           = MQI_HANDLE_INVALID;
+    t->mql_columns = NULL;
+    t->mql_index   = NULL;
+    t->columns     = NULL;
+    t->coldesc     = NULL;
+    t->ncolumn     = 0;
+    t->idx_col     = -1;
+}
+
+
+int create_proxy_table(pep_proxy_t *proxy, uint32_t id, const char *name,
+                       const char *mql_columns, const char *mql_index,
+                       int *errcode, const char **errmsg)
+{
+    pep_table_t *t = NULL;
+
+    if (find_proxy_table(proxy, name) != NULL)
+        FAIL(EEXIST, "table already exists");
+
+    t = mrp_allocz(sizeof(*t));
+
+    if (t == NULL)
+        FAIL(ENOMEM, "failed to allocate table");
+
     mrp_list_init(&t->hook);
     mrp_list_init(&t->watches);
+
+    t->name        = mrp_strdup(name);
+    t->mql_columns = mrp_strdup(mql_columns);
+    t->mql_index   = mrp_strdup(mql_index);
+
+    if (!t->name || !t->mql_columns || (!t->mql_index && mql_index))
+        FAIL(ENOMEM, "failed to allocate table");
 
     if (mqi_get_table_handle((char *)t->name) != MQI_HANDLE_INVALID)
         FAIL(EEXIST, "DB error: table already exists");
@@ -357,8 +523,11 @@ int create_proxy_table(pep_table_t *t, int *errcode, const char **errmsg)
                 FAIL(EINVAL, "DB error: failed to create table index");
         }
 
-        if (!get_table_description(t))
+        if (!introspect_table(t, MQI_HANDLE_INVALID))
             FAIL(EINVAL, "DB error: failed to get table description");
+
+        mrp_list_append(&proxy->tables, &t->hook);
+        t->id = id;
 
         return TRUE;
     }
@@ -366,45 +535,57 @@ int create_proxy_table(pep_table_t *t, int *errcode, const char **errmsg)
         FAIL(ENOMEM, "DB error: failed to create table");
 
  fail:
+    if (t != NULL) {
+        mrp_free(t->name);
+        mrp_free(t->mql_columns);
+        mrp_free(t->mql_index);
+
+        mrp_free(t);
+    }
     return FALSE;
 }
 
 
 void destroy_proxy_table(pep_table_t *t)
 {
+    if (t == NULL)
+        return;
+
     mrp_debug("destroying table %s", t->name ? t->name : "<unknown>");
+
+    mrp_list_delete(&t->hook);
 
     if (t->h != MQI_HANDLE_INVALID)
         mqi_drop_table(t->h);
 
+    mrp_free(t->name);
     mrp_free(t->mql_columns);
     mrp_free(t->mql_index);
 
     mrp_free(t->columns);
     mrp_free(t->coldesc);
-    mrp_free(t->name);
 
-    t->name    = NULL;
-    t->h       = MQI_HANDLE_INVALID;
-    t->columns = NULL;
-    t->ncolumn = 0;
+    if (t->wildcard)
+        regfree(&t->re);
+
+    mrp_free(t);
 }
 
 
 void destroy_proxy_tables(pep_proxy_t *proxy)
 {
-    mqi_handle_t tx;
-    int          i;
+    mrp_list_hook_t *p, *n;
+    pep_table_t     *t;
+    mqi_handle_t     tx;
 
     mrp_debug("destroying tables of client %s", proxy->name);
 
     tx = mqi_begin_transaction();
-    for (i = 0; i < proxy->ntable; i++)
-        destroy_proxy_table(proxy->tables + i);
+    mrp_list_foreach(&proxy->tables, p, n) {
+        t = mrp_list_entry(p, typeof(*t), hook);
+        destroy_proxy_table(t);
+    }
     mqi_commit_transaction(tx);
-
-    proxy->tables = NULL;
-    proxy->ntable = 0;
 }
 
 
@@ -424,15 +605,25 @@ pep_table_t *create_watch_table(pdp_t *pdp, const char *name)
         if (t->name == NULL)
             goto fail;
 
-        get_table_description(t);
+        if (wildcard_watch(name)) {
+            if (regcomp(&t->re, name, REG_EXTENDED | REG_NOSUB) != 0)
+                goto fail;
 
-        if (t->h != MQI_HANDLE_INVALID)
-            add_table_triggers(t);
+            t->wildcard = true;
 
-        if (!mrp_htbl_insert(pdp->watched, t->name, t))
-            goto fail;
+            mrp_list_append(&pdp->wildcard, &t->hook);
+        }
+        else {
+            introspect_table(t, MQI_HANDLE_INVALID);
 
-        mrp_list_append(&pdp->tables, &t->hook);
+            if (t->h != MQI_HANDLE_INVALID)
+                add_table_triggers(t);
+
+            mrp_list_append(&pdp->tables, &t->hook);
+
+            if (!mrp_htbl_insert(pdp->watched, t->name, t))
+                goto fail;
+        }
     }
 
     return t;
@@ -478,9 +669,26 @@ void destroy_watch_table(pdp_t *pdp, pep_table_t *t)
 }
 
 
-static pep_table_t *lookup_watch_table(pdp_t *pdp, const char *name)
+pep_table_t *lookup_watch_table(pdp_t *pdp, const char *name)
 {
-    return mrp_htbl_lookup(pdp->watched, (void *)name);
+    pep_table_t     *t;
+    mrp_list_hook_t *p, *n;
+
+    t = mrp_htbl_lookup(pdp->watched, (void *)name);
+
+    if (t != NULL)
+        return t;
+
+    if (wildcard_watch(name)) {
+        mrp_list_foreach(&pdp->wildcard, p, n) {
+            t = mrp_list_entry(p, typeof(*t), hook);
+
+            if (!strcmp(t->name, name))
+                return t;
+        }
+    }
+
+    return NULL;
 }
 
 
@@ -494,7 +702,90 @@ static void purge_watch_table_cb(void *key, void *entry)
 }
 
 
-int create_proxy_watch(pep_proxy_t *proxy, int id,
+static int create_wildcard_watches(pep_table_t *t, const char *name)
+{
+    pep_watch_t     *w;
+    mrp_list_hook_t *p, *n;
+    int              error;
+    const char      *errmsg;
+
+    mrp_list_foreach(&t->watches, p, n) {
+        w = mrp_list_entry(p, typeof(*w), tbl_hook);
+
+        if (find_proxy_watch(w->proxy, name) != NULL)
+            continue;
+
+        mrp_log_info("Subscribing client %s for table %s (%s).",
+                     w->proxy->name, name, w->table->name);
+
+        create_proxy_watch(w->proxy, w->id + w->nwatch++, name,
+                           w->mql_columns, w->mql_where, w->max_rows,
+                           &error, &errmsg);
+    }
+
+    return TRUE;
+}
+
+
+static int instantiate_wildcard_watches(pdp_t *pdp, const char *name)
+{
+    pep_table_t     *t, *e;
+    mrp_list_hook_t *p, *n;
+    regmatch_t       m[1];
+
+    mrp_list_foreach(&pdp->wildcard, p, n) {
+        t = mrp_list_entry(p, typeof(*t), hook);
+
+        if (regexec(&t->re, name, 1, m, 0) == REG_NOMATCH)
+            continue;
+
+        if (t->imported)
+            create_wildcard_watches(t, name);
+
+        if (!t->exported)
+            continue;
+
+        if ((e = lookup_watch_table(pdp, name)) == NULL)
+            e = create_watch_table(pdp, name);
+
+        if (e != NULL && !e->exported) {
+            e->exported = true;
+            e->expid    = pdp->nexport++;
+            mrp_log_info("Table %s marked for exporting.", e->name);
+        }
+    }
+
+    return TRUE;
+}
+
+
+static int create_matching_watches(pep_watch_t *w)
+{
+    char       *tables[256];
+    int         ntable, i;
+    regmatch_t  m[1];
+    int         error;
+    const char *errmsg;
+
+    ntable = mqi_show_tables(MQI_TEMPORARY, &tables[0], MRP_ARRAY_SIZE(tables));
+
+    for (i = 0; i < ntable; i++) {
+        if (regexec(&w->table->re, tables[i], 1, m, 0) == REG_NOMATCH)
+            continue;
+
+        mrp_log_info("Subscribing client %s for table %s (%s).",
+                     w->proxy->name, tables[i], w->table->name);
+
+        create_proxy_watch(w->proxy, w->id + w->nwatch++, tables[i],
+                           w->mql_columns, w->mql_where, w->max_rows,
+                           &error, &errmsg);
+    }
+
+    return TRUE;
+}
+
+
+int create_proxy_watch(pep_proxy_t *proxy, uint32_t id,
                        const char *table, const char *mql_columns,
                        const char *mql_where, int max_rows,
                        int *error, const char **errmsg)
@@ -502,8 +793,24 @@ int create_proxy_watch(pep_proxy_t *proxy, int id,
     pdp_t       *pdp = proxy->pdp;
     pep_table_t *t;
     pep_watch_t *w;
+    bool         wildcard;
 
     t = lookup_watch_table(pdp, table);
+    wildcard = wildcard_watch(table);
+
+    /* Notes: in principle, we could allow these... */
+    if (wildcard) {
+        if (mql_columns && *mql_columns && strcmp(mql_columns, "*") != 0) {
+            *error  = EINVAL;
+            *errmsg = "columns must be * for wildcard watch";
+            goto fail;
+        }
+        if (mql_where && *mql_where) {
+            *error  = EINVAL;
+            *errmsg = "where-clause not supported for wildcard watch";
+            goto fail;
+        }
+    }
 
     if (t == NULL) {
         t = create_watch_table(pdp, table);
@@ -527,12 +834,20 @@ int create_proxy_watch(pep_proxy_t *proxy, int id,
         w->proxy        = proxy;
         w->id           = id;
         w->notify       = true;
+        w->describe     = true;
 
         if (w->mql_columns == NULL || w->mql_where == NULL)
             goto fail;
 
         mrp_list_append(&t->watches, &w->tbl_hook);
-        mrp_list_append(&proxy->watches, &w->pep_hook);
+
+        if (!wildcard)
+            mrp_list_append(&proxy->watches, &w->pep_hook);
+        else
+            mrp_list_append(&proxy->wildcard, &w->pep_hook);
+
+        if (wildcard)
+            create_matching_watches(w);
 
         return TRUE;
     }
@@ -552,6 +867,20 @@ int create_proxy_watch(pep_proxy_t *proxy, int id,
 }
 
 
+void destroy_proxy_watch(pep_watch_t *w)
+{
+    if (w != NULL) {
+        mrp_list_delete(&w->tbl_hook);
+        mrp_list_delete(&w->pep_hook);
+
+        mrp_free(w->mql_columns);
+        mrp_free(w->mql_where);
+
+        mrp_free(w);
+    }
+}
+
+
 void destroy_proxy_watches(pep_proxy_t *proxy)
 {
     pep_watch_t     *w;
@@ -561,10 +890,13 @@ void destroy_proxy_watches(pep_proxy_t *proxy)
         mrp_list_foreach(&proxy->watches, p, n) {
             w = mrp_list_entry(p, typeof(*w), pep_hook);
 
-            mrp_list_delete(&w->tbl_hook);
-            mrp_list_delete(&w->pep_hook);
+            destroy_proxy_watch(w);
+        }
 
-            mrp_free(w);
+        mrp_list_foreach(&proxy->wildcard, p, n) {
+            w = mrp_list_entry(p, typeof(*w), pep_hook);
+
+            destroy_proxy_watch(w);
         }
     }
 }
@@ -572,10 +904,13 @@ void destroy_proxy_watches(pep_proxy_t *proxy)
 
 static void reset_proxy_tables(pep_proxy_t *proxy)
 {
-    int i;
+    mrp_list_hook_t *p, *n;
+    pep_table_t     *t;
 
-    for (i = 0; i < proxy->ntable; i++)
-        mqi_delete_from(proxy->tables[i].h, NULL);
+    mrp_list_foreach(&proxy->tables, p, n) {
+        t = mrp_list_entry(p, typeof(*t), hook);
+        mqi_delete_from(t->h, NULL);
+    }
 }
 
 
@@ -602,7 +937,7 @@ int set_proxy_tables(pep_proxy_t *proxy, mrp_domctl_data_t *tables, int ntable,
 {
     mqi_handle_t    tx;
     pep_table_t    *t;
-    int             i, id;
+    int             i;
 
     tx = mqi_begin_transaction();
 
@@ -610,25 +945,19 @@ int set_proxy_tables(pep_proxy_t *proxy, mrp_domctl_data_t *tables, int ntable,
         reset_proxy_tables(proxy);
 
         for (i = 0; i < ntable; i++) {
-            id = tables[i].id;
+            t = lookup_proxy_table(proxy, tables[i].id);
 
-            if (id < 0 || id >= proxy->ntable)
+            if (t == NULL)
                 goto fail;
-
-            t = proxy->tables + id;
 
             if (tables[i].ncolumn != t->ncolumn)
                 goto fail;
 
-#if 0
-            if (!delete_from_table(t, tables[i].rows, tables[i].nrow))
-                goto fail;
-#endif
-
             if (!insert_into_table(t, tables[i].rows, tables[i].nrow))
                 goto fail;
 
-
+            mrp_log_info("Client %s set table #%u (%s, %d rows).", proxy->name,
+                         tables[i].id, t->name, tables[i].nrow);
         }
 
         mqi_commit_transaction(tx);
@@ -636,10 +965,67 @@ int set_proxy_tables(pep_proxy_t *proxy, mrp_domctl_data_t *tables, int ntable,
         return TRUE;
 
     fail:
+        mrp_log_error("Client %s failed to set table #%u (%s).", proxy->name,
+                      tables[i].id, t ? t->name : "unknown");
+
         *error  = EINVAL;
         *errmsg = "failed to set tables";
         mqi_rollback_transaction(tx);
     }
 
     return FALSE;
+}
+
+
+void dump_table_data(mrp_domctl_data_t *table)
+{
+    mrp_domctl_value_t *row;
+    int                 i, j;
+    char                buf[1024], *p;
+    const char         *t;
+    int                 n, l;
+
+    mrp_log_info("Table #%d ('%s'): %d rows x %d columns",
+                 table->id, table->name,
+             table->nrow, table->ncolumn);
+    if (table->columns != NULL)
+        mrp_log_info("    column definition: '%s'", table->columns);
+
+    for (i = 0; i < table->nrow; i++) {
+        row = table->rows[i];
+        p   = buf;
+        n   = sizeof(buf);
+
+        for (j = 0, t = ""; j < table->ncolumn; j++, t = ", ") {
+            switch (row[j].type) {
+            case MRP_DOMCTL_STRING:
+                l  = snprintf(p, n, "%s'%s'", t, row[j].str);
+                p += l;
+                n -= l;
+                break;
+            case MRP_DOMCTL_INTEGER:
+                l  = snprintf(p, n, "%s%d", t, row[j].s32);
+                p += l;
+                n -= l;
+                break;
+            case MRP_DOMCTL_UNSIGNED:
+                l  = snprintf(p, n, "%s%u", t, row[j].u32);
+                p += l;
+                n -= l;
+                break;
+            case MRP_DOMCTL_DOUBLE:
+                l  = snprintf(p, n, "%s%f", t, row[j].dbl);
+                p += l;
+                n -= l;
+                break;
+            default:
+                l  = snprintf(p, n, "%s<invalid column 0x%x>",
+                              t, row[j].type);
+                p += l;
+                n -= l;
+            }
+        }
+
+        mrp_log_info("row #%d: { %s }", i, buf);
+    }
 }

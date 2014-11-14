@@ -31,6 +31,8 @@
 #define __MURPHY_DOMAIN_CONTROL_TYPES_H__
 
 #include <stdbool.h>
+#include <regex.h>
+#include <sys/types.h>
 
 #include <murphy/common/list.h>
 #include <murphy/common/mainloop.h>
@@ -84,14 +86,21 @@ struct pep_table_s {
     char               *name;            /* table name */
     char               *mql_columns;     /* column definition clause */
     char               *mql_index;       /* index column list */
-    mrp_list_hook_t     hook;            /* to list of tables */
+    mrp_list_hook_t     hook;            /* to list of all or pep tables */
     mqi_handle_t        h;               /* table handle */
+    uint32_t            id;              /* id within proxy */
     mqi_column_def_t   *columns;         /* column definitions */
     mqi_column_desc_t  *coldesc;         /* column descriptors */
     int                 ncolumn;         /* number of columns */
     int                 idx_col;         /* column index of index column */
     mrp_list_hook_t     watches;         /* watches for this table */
-    bool                changed;         /* whether has unsynced changes */
+    int                 changed : 1;     /* whether has unsynced changes */
+    int                 exported : 1;    /* whether exported to parent */
+    int                 created : 1;     /* whether created in parent */
+    int                 imported : 1;    /* whether imported from parent */
+    int                 wildcard : 1;    /* whether a wildcard watch table */
+    uint32_t            expid;           /* id in parent */
+    regex_t             re;              /* name-matching regexp if wildcard */
 };
 
 
@@ -105,10 +114,12 @@ struct pep_watch_s {
     char            *mql_where;          /* where clause for select */
     int              max_rows;           /* max number of rows to select */
     pep_proxy_t     *proxy;              /* enforcement point */
-    int              id;                 /* table id within proxy */
+    uint32_t         id;                 /* table id within proxy */
+    int              nwatch;             /* instances if wildcard watch */
     mrp_list_hook_t  tbl_hook;           /* hook to table watch list */
     mrp_list_hook_t  pep_hook;           /* hook to proxy watch list */
-    bool             notify;             /* whether to notify this watch */
+    int              notify : 1;         /* whether to notify this watch */
+    int              describe : 1;       /* whether needs to describe table */
 };
 
 
@@ -120,7 +131,8 @@ typedef struct {
     int  (*send_msg)(pep_proxy_t *proxy, msg_t *msg);
     void (*unref)(void *data);
     int  (*create_notify)(pep_proxy_t *proxy);
-    int  (*update_notify)(pep_proxy_t *proxy, int tblid, mql_result_t *r);
+    int  (*update_notify)(pep_proxy_t *proxy, const char *tblname, int tblid,
+                          mql_result_t *r, const char *describe);
     int  (*send_notify)(pep_proxy_t *proxy);
     void (*free_notify)(pep_proxy_t *proxy);
 } proxy_ops_t;
@@ -132,9 +144,10 @@ struct pep_proxy_s {
     pdp_t             *pdp;              /* domain controller context */
     mrp_transport_t   *t;                /* associated transport */
     mrp_list_hook_t    hook;             /* to list of all enforcement points */
-    pep_table_t       *tables;           /* tables owned by this */
-    int                ntable;           /* number of tables */
+    mrp_list_hook_t    tables;           /* tables owned by this */
     mrp_list_hook_t    watches;          /* tables watched by this */
+    mrp_list_hook_t    wildcard;         /* wildcard watches */
+    uint32_t           tblid;            /* next table ID */
     proxy_ops_t       *ops;              /* transport/messaging operations */
     uint32_t           seqno;            /* request sequence number */
     mrp_list_hook_t    pending;          /* pending method invocations */
@@ -159,11 +172,17 @@ struct pdp_s {
     mrp_list_hook_t  proxies;            /* list of enforcement points */
     mrp_list_hook_t  tables;             /* list of tables we track */
     mrp_htbl_t      *watched;            /* tracked tables by name */
+    mrp_list_hook_t  wildcard;           /* wildcard watches */
     mrp_deferred_t  *notify;             /* deferred notification */
     bool             notify_scheduled;   /* is notification scheduled? */
     void            *reh;                /* resolver event handler */
     int              ractive;            /* resolver active */
     bool             rblocked;           /* resolver blocked update */
+    mrp_list_hook_t  imports;            /* tables imported from master */
+    mrp_list_hook_t  exports;            /* tables exported to master */
+    int              nexport;            /* number of exported tables */
+    void            *dc;                 /* domain-controller client */
+    uint32_t         expid;              /* next exported id */
 };
 
 

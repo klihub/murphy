@@ -72,21 +72,23 @@ mrp_msg_t *msg_encode_register(register_msg_t *reg)
     mrp_domctl_watch_t *w;
     int                 i;
 
-    msg = mrp_msg_create(MSG_UINT16(MSGTYPE, MSG_TYPE_REGISTER),
-                         MSG_UINT32(MSGSEQ , 0),
-                         MSG_STRING(NAME   , reg->name),
+    msg = mrp_msg_create(MSG_UINT16(MSGTYPE, reg->type),
+                         MSG_UINT32(MSGSEQ , reg->seq),
+                         MSG_STRING(NAME   , reg->name ? reg->name : ""),
                          MSG_UINT16(NTABLE , reg->ntable),
                          MSG_UINT16(NWATCH , reg->nwatch),
                          MSG_END);
 
     for (i = 0, t = reg->tables; i < reg->ntable; i++, t++) {
         mrp_msg_append(msg, MSG_STRING(TBLNAME, t->table));
+        mrp_msg_append(msg, MSG_UINT32(TBLID  , t->id));
         mrp_msg_append(msg, MSG_STRING(COLUMNS, t->mql_columns));
         mrp_msg_append(msg, MSG_STRING(INDEX  , t->mql_index));
     }
 
     for (i = 0, w = reg->watches; i < reg->nwatch; i++, w++) {
         mrp_msg_append(msg, MSG_STRING(TBLNAME, w->table));
+        mrp_msg_append(msg, MSG_UINT32(TBLID  , w->id));
         mrp_msg_append(msg, MSG_STRING(COLUMNS, w->mql_columns));
         mrp_msg_append(msg, MSG_STRING(WHERE  , w->mql_where));
         mrp_msg_append(msg, MSG_UINT16(MAXROWS, w->max_rows));
@@ -103,17 +105,18 @@ msg_t *msg_decode_register(mrp_msg_t *msg)
     mrp_domctl_table_t *t;
     mrp_domctl_watch_t *w;
     char               *name, *table, *columns, *index, *where;
-    uint16_t            ntable, nwatch, max_rows;
-    uint32_t            seqno;
+    uint16_t            type, ntable, nwatch, max_rows;
+    uint32_t            tblid, seqno;
     int                 i;
 
     it = NULL;
 
     if (!mrp_msg_iterate_get(msg, &it,
-                             MSG_UINT32(MSGSEQ, &seqno),
-                             MSG_STRING(NAME  , &name),
-                             MSG_UINT16(NTABLE, &ntable),
-                             MSG_UINT16(NWATCH, &nwatch),
+                             MSG_UINT16(MSGTYPE, &type),
+                             MSG_UINT32(MSGSEQ , &seqno),
+                             MSG_STRING(NAME   , &name),
+                             MSG_UINT16(NTABLE , &ntable),
+                             MSG_UINT16(NWATCH , &nwatch),
                              MSG_END))
         return NULL;
 
@@ -122,7 +125,7 @@ msg_t *msg_decode_register(mrp_msg_t *msg)
     if (reg == NULL)
         return NULL;
 
-    reg->type    = MSG_TYPE_REGISTER;
+    reg->type    = type;
     reg->seq     = seqno;
     reg->name    = name;
     reg->tables  = mrp_allocz(sizeof(*reg->tables)  * ntable);
@@ -134,10 +137,12 @@ msg_t *msg_decode_register(mrp_msg_t *msg)
     for (i = 0, t = reg->tables; i < ntable; i++, t++) {
         if (mrp_msg_iterate_get(msg, &it,
                                 MSG_STRING(TBLNAME, &table),
+                                MSG_UINT32(TBLID  , &tblid),
                                 MSG_STRING(COLUMNS, &columns),
                                 MSG_STRING(INDEX  , &index),
                                 MSG_END)) {
             t->table       = table;
+            t->id          = tblid;
             t->mql_columns = columns;
             t->mql_index   = index;
         }
@@ -150,11 +155,13 @@ msg_t *msg_decode_register(mrp_msg_t *msg)
     for (i = 0, w = reg->watches; i < nwatch; i++, w++) {
         if (mrp_msg_iterate_get(msg, &it,
                                 MSG_STRING(TBLNAME, &table),
+                                MSG_UINT32(TBLID  , &tblid),
                                 MSG_STRING(COLUMNS, &columns),
                                 MSG_STRING(WHERE  , &where),
                                 MSG_UINT16(MAXROWS, &max_rows),
                                 MSG_END)) {
             w->table       = table;
+            w->id          = tblid;
             w->mql_columns = columns;
             w->mql_where   = where;
             w->max_rows    = max_rows;
@@ -575,7 +582,8 @@ mrp_msg_t *msg_create_notify(void)
 }
 
 
-int msg_update_notify(mrp_msg_t *msg, int tblid, mql_result_t *r)
+int msg_update_notify(mrp_msg_t *msg, const char *tblname, int tblid,
+                      mql_result_t *r, const char *columns)
 {
     uint16_t    tid, nrow, ncol;
     int         types[MQI_COLUMN_MAX];
@@ -593,9 +601,11 @@ int msg_update_notify(mrp_msg_t *msg, int tblid, mql_result_t *r)
         nrow = ncol = 0;
 
     tid = tblid;
-    if (!mrp_msg_append(msg, MSG_UINT16(TBLID, tid))  ||
-        !mrp_msg_append(msg, MSG_UINT16(NROW , nrow)) ||
-        !mrp_msg_append(msg, MSG_UINT16(NCOL , ncol)))
+    if (!mrp_msg_append(msg, MSG_STRING(TBLNAME, tblname)) ||
+        !mrp_msg_append(msg, MSG_UINT16(TBLID  , tid))  ||
+        !mrp_msg_append(msg, MSG_UINT16(NROW   , nrow)) ||
+        !mrp_msg_append(msg, MSG_UINT16(NCOL   , ncol)) ||
+        !mrp_msg_append(msg, MSG_STRING(COLUMNS, columns)))
         goto fail;
 
     for (i = 0; i < ncol; i++)
@@ -697,6 +707,7 @@ msg_t *msg_decode_notify(mrp_msg_t *msg)
     uint32_t            seqno;
     uint16_t            ntable, ntotal, nrow, ncol;
     uint16_t            tblid;
+    const char         *tblname, *columns;
     int                 t, r, c;
     uint16_t            type;
     mrp_msg_value_t     value;
@@ -734,14 +745,18 @@ msg_t *msg_decode_notify(mrp_msg_t *msg)
 
     for (t = 0; t < ntable; t++) {
         if (!mrp_msg_iterate_get(msg, &it,
-                                 MSG_UINT16(TBLID, &tblid),
-                                 MSG_UINT16(NROW , &nrow ),
-                                 MSG_UINT16(NCOL , &ncol ),
+                                 MSG_STRING(TBLNAME, &tblname ),
+                                 MSG_UINT16(TBLID  , &tblid   ),
+                                 MSG_UINT16(NROW   , &nrow    ),
+                                 MSG_UINT16(NCOL   , &ncol    ),
+                                 MSG_STRING(COLUMNS, &columns ),
                                  MSG_END))
             goto fail;
 
+        d->name    = tblname;
         d->id      = tblid;
         d->ncolumn = ncol;
+        d->columns = columns;
         d->nrow    = nrow;
         d->rows    = nrow ? mrp_allocz(sizeof(*d->rows) * nrow) : NULL;
 
@@ -811,6 +826,8 @@ void msg_free_invoke(msg_t *msg)
 {
     if (msg != NULL) {
         mrp_free(msg->invoke.args);
+        unref_wire(msg);
+
         mrp_free(msg);
     }
 }
@@ -1135,21 +1152,135 @@ msg_t *msg_decode_return(mrp_msg_t *msg)
 }
 
 
+mrp_msg_t *msg_encode_create(register_msg_t *crt)
+{
+    return msg_encode_register(crt);
+}
+
+
+msg_t *msg_decode_create(mrp_msg_t *msg)
+{
+    return msg_decode_register(msg);
+}
+
+
+mrp_msg_t *msg_encode_subscribe(register_msg_t *sub)
+{
+    return msg_encode_register(sub);
+}
+
+
+msg_t *msg_decode_subscribe(mrp_msg_t *msg)
+{
+    return msg_decode_register(msg);
+}
+
+
+void msg_free_drop(msg_t *msg)
+{
+    if (msg != NULL) {
+        unref_wire(msg);
+        mrp_free(msg);
+    }
+}
+
+
+mrp_msg_t *msg_encode_drop(drop_msg_t *drop)
+{
+    mrp_msg_t *msg;
+
+    msg = mrp_msg_create(MSG_UINT16(MSGTYPE, drop->type),
+                         MSG_UINT32(MSGSEQ , drop->seq),
+                         MSG_END);
+
+    if (msg == NULL)
+        return NULL;
+
+    if (mrp_msg_append(msg, MRP_MSG_TAG_UINT32_ARRAY(MSGTAG_TBLID,
+                                                     drop->nid,
+                                                     drop->ids)))
+        return msg;
+
+    mrp_msg_unref(msg);
+    return NULL;
+}
+
+
+msg_t *msg_decode_drop(mrp_msg_t *msg)
+{
+    drop_msg_t      *drop;
+    void            *it;
+    uint16_t         type;
+    uint32_t         seqno;
+    mrp_msg_value_t  val;
+    size_t           size;
+
+    it   = NULL;
+    drop = mrp_allocz(sizeof(*drop));
+
+    if (drop == NULL)
+        goto fail;
+
+    if (!mrp_msg_iterate_get(msg, &it,
+                             MSG_UINT16(MSGTYPE, &type),
+                             MSG_UINT32(MSGSEQ , &seqno),
+                             MSG_END))
+        goto fail;
+
+    drop->type = type;
+    drop->seq  = seqno;
+
+    if (!mrp_msg_iterate_get(msg, &it,
+                             MRP_MSG_TAG_UINT32_ARRAY(MSGTAG_TBLID,
+                                                      &size, &val),
+                             MSG_END))
+        goto fail;
+
+    drop->ids = val.aany;
+    drop->nid = size;
+
+    drop->wire       = mrp_msg_ref(msg);
+    drop->unref_wire = msg_unref_wire;
+
+    return (msg_t *)drop;
+
+ fail:
+    msg_free_drop((msg_t *)drop);
+    return NULL;
+}
+
+
+mrp_msg_t *msg_encode_unsubscribe(drop_msg_t *unsub)
+{
+    return msg_encode_drop(unsub);
+}
+
+
+msg_t *msg_decode_unsubscribe(mrp_msg_t *msg)
+{
+    return msg_decode_drop(msg);
+}
+
+
 msg_t *msg_decode_message(mrp_msg_t *msg)
 {
     uint16_t type;
 
     if (mrp_msg_get(msg, MSG_UINT16(MSGTYPE, &type), MSG_END)) {
         switch (type) {
-        case MSG_TYPE_REGISTER:   return msg_decode_register(msg);
-        case MSG_TYPE_UNREGISTER: return msg_decode_unregister(msg);
-        case MSG_TYPE_SET:        return msg_decode_set(msg);
-        case MSG_TYPE_NOTIFY:     return msg_decode_notify(msg);
-        case MSG_TYPE_ACK:        return msg_decode_ack(msg);
-        case MSG_TYPE_NAK:        return msg_decode_nak(msg);
-        case MSG_TYPE_INVOKE:     return msg_decode_invoke(msg);
-        case MSG_TYPE_RETURN:     return msg_decode_return(msg);
-        default:                  break;
+        case MSG_TYPE_REGISTER:    return msg_decode_register(msg);
+        case MSG_TYPE_UNREGISTER:  return msg_decode_unregister(msg);
+        case MSG_TYPE_SET:         return msg_decode_set(msg);
+        case MSG_TYPE_NOTIFY:      return msg_decode_notify(msg);
+        case MSG_TYPE_ACK:         return msg_decode_ack(msg);
+        case MSG_TYPE_NAK:         return msg_decode_nak(msg);
+        case MSG_TYPE_INVOKE:      return msg_decode_invoke(msg);
+        case MSG_TYPE_RETURN:      return msg_decode_return(msg);
+        case MSG_TYPE_CREATE:      return msg_decode_create(msg);
+        case MSG_TYPE_DROP:        return msg_decode_drop(msg);
+        case MSG_TYPE_SUBSCRIBE:   return msg_decode_subscribe(msg);
+        case MSG_TYPE_UNSUBSCRIBE: return msg_decode_unsubscribe(msg);
+        default:                   break;
         }
     }
 
@@ -1160,15 +1291,19 @@ msg_t *msg_decode_message(mrp_msg_t *msg)
 mrp_msg_t *msg_encode_message(msg_t *msg)
 {
     switch (msg->any.type) {
-    case MSG_TYPE_REGISTER:   return msg_encode_register(&msg->reg);
-    case MSG_TYPE_UNREGISTER: return msg_encode_unregister(&msg->unreg);
-    case MSG_TYPE_SET:        return msg_encode_set(&msg->set);
-    case MSG_TYPE_NOTIFY:     return msg_encode_notify(&msg->notify);
-    case MSG_TYPE_ACK:        return msg_encode_ack(&msg->ack);
-    case MSG_TYPE_NAK:        return msg_encode_nak(&msg->nak);
-    case MSG_TYPE_INVOKE:     return msg_encode_invoke(&msg->invoke);
-    case MSG_TYPE_RETURN:     return msg_encode_return(&msg->ret);
-    default:                  return NULL;
+    case MSG_TYPE_REGISTER:    return msg_encode_register(&msg->reg);
+    case MSG_TYPE_UNREGISTER:  return msg_encode_unregister(&msg->unreg);
+    case MSG_TYPE_SET:         return msg_encode_set(&msg->set);
+    case MSG_TYPE_NOTIFY:      return msg_encode_notify(&msg->notify);
+    case MSG_TYPE_ACK:         return msg_encode_ack(&msg->ack);
+    case MSG_TYPE_NAK:         return msg_encode_nak(&msg->nak);
+    case MSG_TYPE_INVOKE:      return msg_encode_invoke(&msg->invoke);
+    case MSG_TYPE_RETURN:      return msg_encode_return(&msg->ret);
+    case MSG_TYPE_CREATE:      return msg_encode_create(&msg->crt);
+    case MSG_TYPE_DROP:        return msg_encode_drop(&msg->drop);
+    case MSG_TYPE_SUBSCRIBE:   return msg_encode_subscribe(&msg->sub);
+    case MSG_TYPE_UNSUBSCRIBE: return msg_encode_unsubscribe(&msg->unsub);
+    default:                   return NULL;
     }
 }
 
@@ -1213,7 +1348,7 @@ msg_t *json_decode_register(mrp_json_t *msg)
     mrp_domctl_watch_t *w;
     int                 seqno;
     char               *name, *table, *columns, *index, *where;
-    int                 ntable, nwatch, max_rows;
+    int                 ntable, nwatch, max_rows, tblid;
     mrp_json_t         *arr, *tbl, *wch;
     int                 i;
 
@@ -1247,10 +1382,12 @@ msg_t *json_decode_register(mrp_json_t *msg)
         if (!mrp_json_array_get_object(arr, i, &tbl))
             goto fail;
 
-        if (mrp_json_get_string(tbl, "table"  , &table)   &&
-            mrp_json_get_string(tbl, "columns", &columns) &&
-            mrp_json_get_string(tbl, "index"  , &index)) {
+        if (mrp_json_get_string (tbl, "table"  , &table)   &&
+            mrp_json_get_integer(tbl, "id"     , &tblid)   &&
+            mrp_json_get_string (tbl, "columns", &columns) &&
+            mrp_json_get_string (tbl, "index"  , &index)) {
             t->table       = table;
+            t->id          = tblid;
             t->mql_columns = columns;
             t->mql_index   = index;
         }
@@ -1554,7 +1691,8 @@ mrp_json_t *json_create_notify(void)
 }
 
 
-int json_update_notify(mrp_json_t *msg, int tblid, mql_result_t *r)
+int json_update_notify(mrp_json_t *msg, const char *tblname, int tblid,
+                       mql_result_t *r, const char *columns)
 {
     int         nrow, ncol;
     int         types[MQI_COLUMN_MAX];
@@ -1588,9 +1726,11 @@ int json_update_notify(mrp_json_t *msg, int tblid, mql_result_t *r)
         goto fail;
     }
 
-    if (!mrp_json_add_integer(tbl, "id"  , tblid) ||
-        !mrp_json_add_integer(tbl, "nrow", nrow)  ||
-        !mrp_json_add_integer(tbl, "ncol", ncol))
+    if (!mrp_json_add_integer(tbl, "name"   , tblname) ||
+        !mrp_json_add_integer(tbl, "id"     , tblid  ) ||
+        !mrp_json_add_integer(tbl, "nrow"   , nrow   ) ||
+        !mrp_json_add_integer(tbl, "ncol"   , ncol   ) ||
+        !mrp_json_add_string (tbl, "columns", columns ? columns : ""))
         goto fail;
 
     rows = mrp_json_create(MRP_JSON_ARRAY);

@@ -35,6 +35,7 @@
 #include "domain-control-types.h"
 #include "domain-control.h"
 #include "client.h"
+#include "replicator.h"
 
 #define DEFAULT_EXTADDR MRP_DEFAULT_DOMCTL_ADDRESS
 #define NO_ADDR         NULL
@@ -49,7 +50,10 @@ enum {
     ARG_EXTADDR,                         /* external transport address */
     ARG_INTADDR,                         /* internal transport address */
     ARG_WRTADDR,                         /* WRT transport address */
-    ARG_HTTPDIR                          /* content directory for HTTP */
+    ARG_HTTPDIR,                         /* content directory for HTTP */
+    ARG_MASTER,                          /* master Murphy address */
+    ARG_IMPORTS,                         /* tables to import from master */
+    ARG_EXPORTS,                         /* tables to export to master */
 };
 
 
@@ -59,14 +63,18 @@ static int plugin_init(mrp_plugin_t *plugin)
     const char *intaddr = plugin->args[ARG_INTADDR].str;
     const char *wrtaddr = plugin->args[ARG_WRTADDR].str;
     const char *httpdir = plugin->args[ARG_HTTPDIR].str;
+    const char *master  = plugin->args[ARG_MASTER ].str;
+    const char *imports = plugin->args[ARG_IMPORTS].str;
+    const char *exports = plugin->args[ARG_EXPORTS].str;
 
-    plugin->data = create_domain_control(plugin->ctx,
-                                         extaddr && *extaddr ? extaddr : NULL,
-                                         intaddr && *intaddr ? intaddr : NULL,
-                                         wrtaddr && *wrtaddr ? wrtaddr : NULL,
-                                         httpdir);
+    plugin->data = create_domain_control(plugin->ctx, extaddr, intaddr,
+                                         wrtaddr, httpdir);
 
-    return (plugin->data != NULL);
+    if (plugin->data != NULL && create_replicator(plugin->data, master,
+                                                  imports, exports))
+        return TRUE;
+    else
+        return FALSE;
 }
 
 
@@ -74,6 +82,7 @@ static void plugin_exit(mrp_plugin_t *plugin)
 {
     pdp_t *pdp = (pdp_t *)plugin->data;
 
+    destroy_replicator(pdp);
     destroy_domain_control(pdp);
 }
 
@@ -114,7 +123,10 @@ static mrp_plugin_arg_t domctl_args[] = {
     MRP_PLUGIN_ARGIDX(ARG_EXTADDR, STRING, "external_address", DEFAULT_EXTADDR),
     MRP_PLUGIN_ARGIDX(ARG_INTADDR, STRING, "internal_address", NO_ADDR        ),
     MRP_PLUGIN_ARGIDX(ARG_WRTADDR, STRING, "wrt_address"     , NO_ADDR        ),
-    MRP_PLUGIN_ARGIDX(ARG_HTTPDIR, STRING, "httpdir", DEFAULT_HTTPDIR)
+    MRP_PLUGIN_ARGIDX(ARG_HTTPDIR, STRING, "httpdir"         , DEFAULT_HTTPDIR),
+    MRP_PLUGIN_ARGIDX(ARG_MASTER , STRING, "master"          , NO_ADDR        ),
+    MRP_PLUGIN_ARGIDX(ARG_IMPORTS, STRING, "imports"         , NULL           ),
+    MRP_PLUGIN_ARGIDX(ARG_EXPORTS, STRING, "exports"         , NULL           )
 };
 
 MURPHY_REGISTER_PLUGIN("domain-control",

@@ -76,7 +76,9 @@ pep_proxy_t *create_proxy(pdp_t *pdp)
 
     if (proxy != NULL) {
         mrp_list_init(&proxy->hook);
+        mrp_list_init(&proxy->tables);
         mrp_list_init(&proxy->watches);
+        mrp_list_init(&proxy->wildcard);
         mrp_list_init(&proxy->pending);
 
         proxy->pdp   = pdp;
@@ -91,20 +93,206 @@ pep_proxy_t *create_proxy(pdp_t *pdp)
 
 void destroy_proxy(pep_proxy_t *proxy)
 {
-    int i;
+    if (proxy == NULL)
+        return;
 
-    if (proxy != NULL) {
-        mrp_list_delete(&proxy->hook);
+    mrp_list_delete(&proxy->hook);
+    destroy_proxy_tables(proxy);
+    destroy_proxy_watches(proxy);
+    purge_pending(proxy);
 
-        for (i = 0; i < proxy->ntable; i++)
-            destroy_proxy_table(proxy->tables + i);
+    mrp_free(proxy);
+}
 
-        destroy_proxy_watches(proxy);
 
-        purge_pending(proxy);
+pep_table_t *find_proxy_table(pep_proxy_t *proxy, const char *name)
+{
+    mrp_list_hook_t *p, *n;
+    pep_table_t     *t;
 
-        mrp_free(proxy);
+    mrp_list_foreach(&proxy->tables, p, n) {
+        t = mrp_list_entry(p, typeof(*t), hook);
+
+        if (t->name != NULL && !strcmp(t->name, name))
+            return t;
     }
+
+    return NULL;
+}
+
+
+pep_table_t *lookup_proxy_table(pep_proxy_t *proxy, uint32_t id)
+{
+    mrp_list_hook_t *p, *n;
+    pep_table_t     *t;
+
+    mrp_list_foreach(&proxy->tables, p, n) {
+        t = mrp_list_entry(p, typeof(*t), hook);
+
+        if (t->id == id)
+            return t;
+    }
+
+    return NULL;
+}
+
+
+pep_watch_t *find_proxy_watch(pep_proxy_t *proxy, const char *name)
+{
+    mrp_list_hook_t *p, *n;
+    pep_watch_t     *w;
+
+    mrp_list_foreach(&proxy->watches, p, n) {
+        w = mrp_list_entry(p, typeof(*w), pep_hook);
+
+        if (w->table != NULL && !strcmp(w->table->name, name))
+            return w;
+    }
+
+    return NULL;
+}
+
+
+static pep_watch_t *lookup_proxy_watch(pep_proxy_t *proxy, uint32_t id)
+{
+    mrp_list_hook_t *p, *n;
+    pep_watch_t     *w;
+
+    mrp_list_foreach(&proxy->watches, p, n) {
+        w = mrp_list_entry(p, typeof(*w), pep_hook);
+
+        if (w->id == id)
+            return w;
+    }
+
+    return NULL;
+}
+
+
+int create_proxy_tables(pep_proxy_t *proxy, mrp_domctl_table_t *tables,
+                        int ntable, int *error, const char **errmsg)
+{
+    mrp_domctl_table_t *t;
+    int                 i;
+
+    for (i = 0, t = tables; i < ntable; i++, t++) {
+        if (lookup_proxy_table(proxy, t->id) != NULL) {
+            mrp_log_error("Client %s already has table #%u.", proxy->name,
+                          t->id);
+            *error  = EEXIST;
+            *errmsg = "table id already in use";
+            ntable = i;
+            goto fail;
+        }
+
+
+        if (create_proxy_table(proxy, t->id, t->table, t->mql_columns,
+                               t->mql_index, error, errmsg)) {
+            mrp_log_info("Client %s created table %s.", proxy->name, t->table);
+        }
+        else {
+            mrp_log_error("Client %s failed to create table %s (%d: %s).",
+                          proxy->name, t->table, *error, *errmsg);
+            ntable = i;
+            goto fail;
+        }
+    }
+
+    return TRUE;
+
+ fail:
+    for (i = 0, t = tables; i < ntable; i++, t++)
+        destroy_proxy_table(lookup_proxy_table(proxy, t->id));
+
+    return FALSE;
+}
+
+
+int delete_proxy_tables(pep_proxy_t *proxy, uint32_t *ids, int nid,
+                        int *error, const char **errmsg)
+{
+    pep_table_t *t;
+    int          i;
+
+    MRP_UNUSED(error);
+    MRP_UNUSED(errmsg);
+
+    for (i = 0; i < nid; i++) {
+        if ((t = lookup_proxy_table(proxy, ids[i])) != NULL) {
+            mrp_log_info("Client %s destroyed table #%u (%s).", proxy->name,
+                         t->id, t->name ? t->name : "unknown");
+            destroy_proxy_table(t);
+        }
+    }
+
+    return TRUE;
+}
+
+
+int create_proxy_watches(pep_proxy_t *proxy, mrp_domctl_watch_t *watches,
+                         int nwatch, int *error, const char **errmsg)
+{
+    pep_watch_t *w;
+    int          i;
+
+    for (i = 0; i < nwatch; i++) {
+        if ((w = find_proxy_watch(proxy, watches[i].table)) != NULL ||
+            (w = lookup_proxy_watch(proxy, watches[i].id))  != NULL) {
+            mrp_log_error("Client %s already subscribed for #%u or %s.",
+                          proxy->name, watches[i].id, watches[i].table);
+            *error  = EEXIST;
+            *errmsg = "watch/id already exists";
+            nwatch = i;
+            goto fail;
+        }
+
+        if (create_proxy_watch(proxy, watches[i].id, watches[i].table,
+                               watches[i].mql_columns,
+                               watches[i].mql_where,
+                               watches[i].max_rows,
+                               error, errmsg)) {
+            mrp_log_info("Client %s subscribed for table %s.", proxy->name,
+                         watches[i].table);
+        }
+        else {
+            mrp_log_error("Client %s failed to subscribe for table %s.",
+                          proxy->name, watches[i].table);
+            nwatch = i;
+            goto fail;
+        }
+    }
+
+    return TRUE;
+
+ fail:
+    for (i = 0; i < nwatch; i++) {
+        if ((w = lookup_proxy_watch(proxy, watches[i].id)) != NULL)
+            destroy_proxy_watch(w);
+    }
+
+    return FALSE;
+}
+
+
+int delete_proxy_watches(pep_proxy_t *proxy, uint32_t *ids, int nid,
+                         int *error, const char **errmsg)
+{
+    pep_watch_t *w;
+    int          i;
+
+    MRP_UNUSED(error);
+    MRP_UNUSED(errmsg);
+
+    for (i = 0; i < nid; i++) {
+        if ((w = lookup_proxy_watch(proxy, ids[i])) != NULL) {
+            mrp_log_info("Client %s unsubscribed from table #%u (%s).",
+                         proxy->name, ids[i], w->table && w->table->name ?
+                         w->table->name : "unknown");
+            destroy_proxy_watch(w);
+        }
+    }
+
+    return TRUE;
 }
 
 
@@ -113,56 +301,21 @@ int register_proxy(pep_proxy_t *proxy, char *name,
                    mrp_domctl_watch_t *watches, int nwatch,
                    int *error, const char **errmsg)
 {
-    pep_table_t        *t;
-    mrp_domctl_watch_t *w;
-    int                 i;
-
     proxy->name   = mrp_strdup(name);
-    proxy->tables = mrp_allocz_array(typeof(*proxy->tables) , ntable);
-    proxy->ntable = ntable;
     proxy->notify = true;
 
-    if (proxy->name == NULL || (ntable && proxy->tables == NULL)) {
+    if (proxy->name == NULL) {
         *error  = ENOMEM;
         *errmsg = "failed to allocate proxy table";
 
         return FALSE;
     }
 
-    for (i = 0, t = proxy->tables; i < ntable; i++, t++) {
-        t->h           = MQI_HANDLE_INVALID;
-        t->name        = mrp_strdup(tables[i].table);
-        t->mql_columns = mrp_strdup(tables[i].mql_columns);
-        t->mql_index   = mrp_strdup(tables[i].mql_index);
+    if (!create_proxy_tables(proxy, tables, ntable, error, errmsg))
+        return FALSE;
 
-        if (t->name == NULL || t->mql_columns == NULL || t->mql_index == NULL) {
-            mrp_log_error("Failed to allocate proxy table %s for %s.",
-                          tables[i].table, name);
-            *error  = ENOMEM;
-            *errmsg = "failed to allocate proxy table";
-
-            return FALSE;
-        }
-
-        if (create_proxy_table(t, error, errmsg))
-            mrp_log_info("Client %s created table %s.", proxy->name,
-                         tables[i].table);
-        else {
-            mrp_log_error("Client %s failed to create table %s (%d: %s).",
-                          proxy->name, tables[i].table, *error, *errmsg);
-            return FALSE;
-        }
-    }
-
-    for (i = 0, w = watches; i < nwatch; i++, w++) {
-        if (create_proxy_watch(proxy, i, w->table, w->mql_columns,
-                               w->mql_where, w->max_rows, error, errmsg))
-            mrp_log_info("Client %s subscribed for table %s.", proxy->name,
-                         w->table);
-        else
-            mrp_log_error("Client %s failed to subscribe for table %s.",
-                          proxy->name, w->table);
-    }
+    if (!create_proxy_watches(proxy, watches, nwatch, error, errmsg))
+        return FALSE;
 
     return TRUE;
 }

@@ -46,7 +46,19 @@ int register_proxy(pep_proxy_t *proxy, char *name,
                    int *error, const char **errmsg);
 int unregister_proxy(pep_proxy_t *proxy);
 
+int create_proxy_tables(pep_proxy_t *proxy, mrp_domctl_table_t *tables,
+                        int ntable, int *error, const char **errmsg);
+int delete_proxy_tables(pep_proxy_t *proxy, uint32_t *ids, int nid,
+                        int *error, const char **errmsg);
+int create_proxy_watches(pep_proxy_t *proxy, mrp_domctl_watch_t *watches,
+                         int nwatch, int *error, const char **errmsg);
+int delete_proxy_watches(pep_proxy_t *proxy, uint32_t *ids, int nid,
+                         int *error, const char **errmsg);
+
 pep_proxy_t *find_proxy(pdp_t *pdp, const char *name);
+pep_table_t *find_proxy_table(pep_proxy_t *proxy, const char *name);
+pep_table_t *lookup_proxy_table(pep_proxy_t *proxy, uint32_t id);
+pep_watch_t *find_proxy_watch(pep_proxy_t *proxy, const char *name);
 
 uint32_t proxy_queue_pending(pep_proxy_t *proxy,
                              mrp_domain_return_cb_t return_cb, void *user_data);

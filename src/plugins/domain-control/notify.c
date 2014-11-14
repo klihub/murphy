@@ -35,6 +35,7 @@
 #include "domain-control-types.h"
 #include "message.h"
 #include "table.h"
+#include "replicator.h"
 #include "notify.h"
 
 
@@ -51,6 +52,8 @@ static int collect_watch_notification(pep_watch_t *w)
     pep_proxy_t  *proxy = w->proxy;
     mql_result_t *r     = NULL;
     int           n;
+    char          mql[1024];
+    const char   *describe;
 
     mrp_debug("updating %s watch for %s", w->table->name, proxy->name);
 
@@ -59,22 +62,36 @@ static int collect_watch_notification(pep_watch_t *w)
             goto fail;
     }
 
+    describe = NULL;
+
     if (w->table->h != MQI_HANDLE_INVALID) {
+        mrp_debug("executing 'select %s from %s%s%s", w->mql_columns,
+                  w->table->name, w->mql_where[0] ? " where " : "",
+                  w->mql_where[0] ? w->mql_where : "");
+
         if (!exec_mql(mql_result_rows, &r, "select %s from %s%s%s",
                       w->mql_columns, w->table->name,
                       w->mql_where[0] ? " where " : "", w->mql_where)) {
-            mrp_debug("select from table %s failed", w->table->name);
+            mrp_log_error("select from table %s failed", w->table->name);
             goto fail;
         }
-    }
 
-    n = proxy->ops->update_notify(proxy, w->id, r);
+        if (w->describe)
+            describe = describe_mql(mql, sizeof(mql), w->table->h, r);
+    }
+    else
+        w->describe = true;
+
+    n = proxy->ops->update_notify(proxy, w->table->name, w->id, r, describe);
 
     if (r != NULL)
         mql_result_free(r);
 
-    if (n >= 0)
+    if (n >= 0) {
+        if (describe)
+            w->describe = false;
         return TRUE;
+    }
     else {
     fail:
         proxy->ops->free_notify(proxy);
@@ -115,6 +132,7 @@ void notify_table_changes(pdp_t *pdp)
     pep_proxy_t     *proxy;
     pep_table_t     *t;
     pep_watch_t     *w;
+    bool             export;
 
     mrp_debug("notifying clients about table changes");
 
@@ -122,6 +140,8 @@ void notify_table_changes(pdp_t *pdp)
         proxy = mrp_list_entry(p, typeof(*proxy), hook);
         prepare_proxy_notification(proxy);
     }
+
+    export = false;
 
     mrp_list_foreach(&pdp->tables, p, n) {
         t = mrp_list_entry(p, typeof(*t), hook);
@@ -131,6 +151,9 @@ void notify_table_changes(pdp_t *pdp)
 
         if (!t->changed)
             continue;
+
+        if (t->exported)
+            export = true;
 
         mrp_list_foreach(&t->watches, wp, wn) {
             w = mrp_list_entry(wp, typeof(*w), tbl_hook);
@@ -156,6 +179,9 @@ void notify_table_changes(pdp_t *pdp)
             proxy->notify = false;
         }
     }
+
+    if (export)
+        replicate_exports(pdp);
 
     mrp_list_foreach(&pdp->tables, p, n) {
         t = mrp_list_entry(p, typeof(*t), hook);

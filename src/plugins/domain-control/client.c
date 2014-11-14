@@ -66,6 +66,7 @@ typedef struct {
         mrp_domctl_return_cb_t  ret;     /* invocation return cb */
     } cb;
     void                   *user_data;   /* opaque callback data */
+    mrp_msg_t              *msg;         /* associated message */
 } pending_request_t;
 
 
@@ -89,7 +90,8 @@ static void closed_cb(mrp_transport_t *t, int error, void *user_data);
 
 
 static int queue_pending(mrp_domctl_t *dc, uint32_t seq,
-                         mrp_domctl_status_cb_t cb, void *user_data);
+                         mrp_domctl_status_cb_t cb, void *user_data,
+                         mrp_msg_t *msg);
 static int notify_pending(mrp_domctl_t *dc, msg_t *msg);
 static int queue_invoke(mrp_domctl_t *dc, uint32_t seq,
                         mrp_domctl_return_cb_t cb, void *user_data);
@@ -127,6 +129,7 @@ mrp_domctl_t *mrp_domctl_create(const char *name, mrp_mainloop_t *ml,
                 dt = dc->tables + i;
 
                 dt->table       = mrp_strdup(st->table);
+                dt->id          = st->id;
                 dt->mql_columns = mrp_strdup(st->mql_columns);
                 dt->mql_index   = mrp_strdup(st->mql_index ? st->mql_index:"");
 
@@ -141,6 +144,7 @@ mrp_domctl_t *mrp_domctl_create(const char *name, mrp_mainloop_t *ml,
                 dw = dc->watches + i;
 
                 dw->table       = mrp_strdup(sw->table);
+                dw->id          = sw->id;
                 dw->mql_columns = mrp_strdup(sw->mql_columns);
                 dw->mql_where   = mrp_strdup(sw->mql_where ? sw->mql_where:"");
                 dw->max_rows    = sw->max_rows;
@@ -358,7 +362,7 @@ void mrp_domctl_disconnect(mrp_domctl_t *dc)
 
 
 int mrp_domctl_set_data(mrp_domctl_t *dc, mrp_domctl_data_t *tables, int ntable,
-                     mrp_domctl_status_cb_t cb, void *user_data)
+                        mrp_domctl_status_cb_t cb, void *user_data)
 {
     set_msg_t  set;
     mrp_msg_t *msg;
@@ -367,11 +371,6 @@ int mrp_domctl_set_data(mrp_domctl_t *dc, mrp_domctl_data_t *tables, int ntable,
 
     if (!dc->connected)
         return FALSE;
-
-    for (i = 0; i < ntable; i++) {
-        if (tables[i].id < 0 || tables[i].id >= dc->ntable)
-            return FALSE;
-    }
 
     mrp_clear(&set);
     set.type   = MSG_TYPE_SET;
@@ -386,7 +385,7 @@ int mrp_domctl_set_data(mrp_domctl_t *dc, mrp_domctl_data_t *tables, int ntable,
         mrp_msg_unref(msg);
 
         if (success)
-            queue_pending(dc, seq, cb, user_data);
+            queue_pending(dc, seq, cb, user_data, NULL);
 
         return success;
     }
@@ -463,6 +462,141 @@ int mrp_domctl_register_methods(mrp_domctl_t *dc, mrp_domctl_method_def_t *defs,
     }
 
     return TRUE;
+}
+
+
+int mrp_domctl_create_tables(mrp_domctl_t *dc, mrp_domctl_table_t *tables,
+                             int ntable, mrp_domctl_status_cb_t status_cb,
+                             void *user_data)
+{
+    register_msg_t  reg;
+    mrp_msg_t      *msg;
+    uint32_t        seq = dc->seqno++;
+    int             success;
+
+    if (tables == NULL || ntable < 1)
+        return FALSE;
+
+    mrp_clear(&reg);
+    reg.type   = MSG_TYPE_CREATE;
+    reg.seq    = seq;
+    reg.tables = tables;
+    reg.ntable = ntable;
+
+    msg = msg_encode_message((msg_t *)&reg);
+
+    if (msg != NULL) {
+        success = mrp_transport_send(dc->t, msg);
+
+        if (success)
+            if (queue_pending(dc, seq, status_cb, user_data, msg))
+                return TRUE;
+
+        mrp_msg_unref(msg);
+    }
+
+    return FALSE;
+}
+
+
+int mrp_domctl_drop_tables(mrp_domctl_t *dc, uint32_t *ids, int nid,
+                           mrp_domctl_status_cb_t status_cb, void *user_data)
+{
+    drop_msg_t  drop;
+    mrp_msg_t  *msg;
+    uint32_t    seq = dc->seqno++;
+    int         success;
+
+    if (ids == NULL || nid < 1)
+        return FALSE;
+
+    mrp_clear(&drop);
+    drop.type   = MSG_TYPE_DROP;
+    drop.seq    = seq;
+    drop.ids    = ids;
+    drop.nid    = nid;
+
+    msg = msg_encode_message((msg_t *)&drop);
+
+    if (msg != NULL) {
+        success = mrp_transport_send(dc->t, msg);
+
+        if (success)
+            if (queue_pending(dc, seq, status_cb, user_data, msg))
+                return TRUE;
+
+        mrp_msg_unref(msg);
+    }
+
+    return FALSE;
+}
+
+
+int mrp_domctl_subscribe_tables(mrp_domctl_t *dc, mrp_domctl_watch_t *watches,
+                                int nwatch, mrp_domctl_status_cb_t status_cb,
+                                void *user_data)
+{
+    register_msg_t  reg;
+    mrp_msg_t      *msg;
+    uint32_t        seq = dc->seqno++;
+    int             success;
+
+    if (watches == NULL || nwatch < 1)
+        return FALSE;
+
+    mrp_clear(&reg);
+    reg.type    = MSG_TYPE_SUBSCRIBE;
+    reg.seq     = seq;
+    reg.watches = watches;
+    reg.nwatch  = nwatch;
+
+    msg = msg_encode_message((msg_t *)&reg);
+
+    if (msg != NULL) {
+        success = mrp_transport_send(dc->t, msg);
+
+        if (success)
+            if (queue_pending(dc, seq, status_cb, user_data, msg))
+                return TRUE;
+
+        mrp_msg_unref(msg);
+    }
+
+    return FALSE;
+}
+
+
+int mrp_domctl_unsubscribe_tables(mrp_domctl_t *dc, uint32_t *ids, int nid,
+                                  mrp_domctl_status_cb_t status_cb,
+                                  void *user_data)
+{
+    drop_msg_t  drop;
+    mrp_msg_t  *msg;
+    uint32_t    seq = dc->seqno++;
+    int         success;
+
+    if (ids == NULL || nid < 1)
+        return FALSE;
+
+    mrp_clear(&drop);
+    drop.type   = MSG_TYPE_UNSUBSCRIBE;
+    drop.seq    = seq;
+    drop.ids    = ids;
+    drop.nid    = nid;
+
+    msg = msg_encode_message((msg_t *)&drop);
+
+    if (msg != NULL) {
+        success = mrp_transport_send(dc->t, msg);
+
+        if (success)
+            if (queue_pending(dc, seq, status_cb, user_data, msg))
+                return TRUE;
+
+        mrp_msg_unref(msg);
+    }
+
+    return FALSE;
 }
 
 
@@ -676,7 +810,8 @@ static void closed_cb(mrp_transport_t *t, int error, void *user_data)
 
 
 static int queue_pending(mrp_domctl_t *dc, uint32_t seq,
-                         mrp_domctl_status_cb_t cb, void *user_data)
+                         mrp_domctl_status_cb_t cb, void *user_data,
+                         mrp_msg_t *msg)
 {
     pending_request_t *pending;
 
@@ -689,6 +824,7 @@ static int queue_pending(mrp_domctl_t *dc, uint32_t seq,
         pending->seqno     = seq;
         pending->cb.status = cb;
         pending->user_data = user_data;
+        pending->msg       = msg;
 
         mrp_list_append(&dc->pending, &pending->hook);
 
@@ -802,6 +938,7 @@ static void purge_pending(mrp_domctl_t *dc)
         pending = mrp_list_entry(p, typeof(*pending), hook);
 
         mrp_list_delete(&pending->hook);
+        mrp_msg_unref(pending->msg);
         mrp_free(pending);
     }
 }
