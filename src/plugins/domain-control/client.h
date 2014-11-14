@@ -46,12 +46,17 @@ MRP_CDECL_BEGIN
 
 typedef struct {
     const char *table;                   /* table name */
+    uint32_t    id;                      /* table id */
     const char *mql_columns;             /* column definition scriptlet */
     const char *mql_index;               /* index column list */
 } mrp_domctl_table_t;
 
-#define MRP_DOMCTL_TABLE(_table, _columns, _index) \
-    { .table = _table, .mql_columns = _columns, .mql_index = _index }
+#define MRP_DOMCTL_TABLE(_id, _table, _columns, _index) { \
+        .table       = _table,                            \
+        .id          = _id,                               \
+        .mql_columns = _columns,                          \
+        .mql_index   = _index,                            \
+    }
 
 
 /*
@@ -60,13 +65,15 @@ typedef struct {
 
 typedef struct {
     const char *table;                   /* table name */
+    uint32_t    id;                      /* watch id */
     const char *mql_columns;             /* column list for select */
     const char *mql_where;               /* where clause for select */
     int         max_rows;                /* max number of rows to select */
 } mrp_domctl_watch_t;
 
-#define MRP_DOMCTL_WATCH(_table, _columns, _where, _max_rows) {       \
+#define MRP_DOMCTL_WATCH(_id, _table, _columns, _where, _max_rows) {  \
         .table       = _table                  ,                      \
+        .id          = _id                     ,                      \
         .mql_columns = _columns ? _columns : "",                      \
         .mql_where   = _where   ? _where   : "",                      \
         .max_rows    = _max_rows               ,                      \
@@ -78,9 +85,10 @@ typedef struct {
  */
 
 typedef struct {
+    const char          *name;           /* table name */
     int                  id;             /* table id */
-    mqi_column_def_t    *coldefs;        /* column definitions */
     int                  ncolumn;        /* columns per row */
+    const char          *columns;        /* MQI column definition */
     mrp_domctl_value_t **rows;           /* row data */
     int                  nrow;           /* number of rows */
 } mrp_domctl_data_t;
@@ -113,6 +121,7 @@ typedef int (*mrp_domctl_invoke_cb_t)(mrp_domctl_t *dc, uint32_t narg,
                                       mrp_domctl_arg_t *args,
                                       uint32_t *nout, mrp_domctl_arg_t *outs,
                                       void *user_data);
+
 
 /*
  * proxied invocation errors
@@ -169,6 +178,25 @@ int mrp_domctl_invoke(mrp_domctl_t *dc, const char *method, int narg,
 /** Register a proxied method handler. */
 int mrp_domctl_register_methods(mrp_domctl_t *dc, mrp_domctl_method_def_t *defs,
                                 size_t ndef);
+
+/** Create the given tables in addition to the existing ones. */
+int mrp_domctl_create_tables(mrp_domctl_t *dc, mrp_domctl_table_t *tables,
+                             int ntable, mrp_domctl_status_cb_t status_cb,
+                             void *user_data);
+
+/** Drop the given tables. */
+int mrp_domctl_drop_tables(mrp_domctl_t *dc, uint32_t *ids, int nid,
+                           mrp_domctl_status_cb_t status_cb, void *user_data);
+
+/** Subscribe to the given tables in addition to the existing ones. */
+int mrp_domctl_subscribe_tables(mrp_domctl_t *dc, mrp_domctl_watch_t *watches,
+                                int nwatch, mrp_domctl_status_cb_t status_cb,
+                                void *user_data);
+
+/** Unsubscribe from the given tables. */
+int mrp_domctl_unsubscribe_tables(mrp_domctl_t *dc, uint32_t *ids, int nid,
+                                  mrp_domctl_status_cb_t status_cb,
+                                  void *user_data);
 
 MRP_CDECL_END
 

@@ -35,21 +35,35 @@
 #include "client.h"
 #include "domain-control-types.h"
 
+static inline int wildcard_watch(const char *name)
+{
+    return (strchr(name, '.') || strchr(name, '?') || strchr(name, '*'));
+}
+
+
 int init_tables(pdp_t *pdp);
 void destroy_tables(pdp_t *pdp);
 
-int create_proxy_table(pep_table_t *t, int *errcode, const char **errmsg);
+int introspect_table(pep_table_t *t, mqi_handle_t h);
+void invalidate_table(pep_table_t *t);
 
-int create_proxy_watch(pep_proxy_t *proxy, int id,
+int create_proxy_table(pep_proxy_t *proxy, uint32_t id, const char *name,
+                       const char *mql_columns, const char *mql_index,
+                       int *errcode, const char **errmsg);
+
+int create_proxy_watch(pep_proxy_t *proxy, uint32_t id,
                        const char *table, const char *mql_columns,
                        const char *mql_where, int max_rows,
                        int *error, const char **errmsg);
 
+pep_table_t *create_watch_table(pdp_t *pdp, const char *name);
 void destroy_watch_table(pdp_t *pdp, pep_table_t *t);
+pep_table_t *lookup_watch_table(pdp_t *pdp, const char *name);
 
 void destroy_proxy_table(pep_table_t *t);
 void destroy_proxy_tables(pep_proxy_t *proxy);
 
+void destroy_proxy_watch(pep_watch_t *w);
 void destroy_proxy_watches(pep_proxy_t *proxy);
 
 int set_proxy_tables(pep_proxy_t *proxy, mrp_domctl_data_t *tables, int ntable,
@@ -58,5 +72,8 @@ int set_proxy_tables(pep_proxy_t *proxy, mrp_domctl_data_t *tables, int ntable,
 int exec_mql(mql_result_type_t type, mql_result_t **resultp,
              const char *format, ...);
 
+const char *describe_mql(char *mql, size_t size, mqi_handle_t h,mql_result_t *r);
+
+void dump_table_data(mrp_domctl_data_t *table);
 
 #endif /* __MURPHY_DOMAIN_CONTROL_TABLE_H__ */

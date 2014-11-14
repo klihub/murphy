@@ -1282,7 +1282,8 @@ DOMAIN_CONTROL_PLUGIN_SOURCES = plugins/domain-control/plugin-domain-control.c \
 				plugins/domain-control/proxy.c		       \
 				plugins/domain-control/table.c                 \
 				plugins/domain-control/notify.c 	       \
-				plugins/domain-control/message.c
+				plugins/domain-control/message.c	       \
+				plugins/domain-control/replicator.c
 DOMAIN_CONTROL_PLUGIN_LOADER  = linkedin-domain-control-loader.c
 
 
@@ -1317,7 +1318,8 @@ libmurphy_plugin_domain_control_la_LIBADD =		\
 		libmurphy-common.la 			\
 		murphy-db/mql/libmql.la			\
 		murphy-db/mqi/libmqi.la			\
-		murphy-db/mdb/libmdb.la
+		murphy-db/mdb/libmdb.la			\
+		libmurphy-domain-controller.la
 
 libmurphy_plugin_domain_control_la_DEPENDENCIES =	\
 		linker-script.domain-control		\
@@ -1381,6 +1383,62 @@ linker-script.domain-control: $(DOMAIN_CONTROL_PLUGIN_LOADER:%.c=%.h)
 
 clean-linker-script::
 	-rm -f linker-script.domain-control
+
+# DB replicator plugin
+REPLICATE_PLUGIN_SOURCES = plugins/replicate/plugin-replicate.c
+REPLICATE_PLUGIN_LOADER  = linkedin-replicate-loader.c
+
+REPLICATE_PLUGIN_CFLAGS  = $(AM_CFLAGS)
+REPLICATE_PLUGIN_LIBS    = libmurphy-replicate.la
+
+if !DISABLED_PLUGIN_REPLICATE
+if BUILTIN_PLUGIN_REPLICATE
+LINKEDIN_PLUGINS        += libmurphy-plugin-replicate.la
+lib_LTLIBRARIES         += libmurphy-plugin-replicate.la
+REPLICATE_PLUGIN_CFLAGS += $(BUILTIN_CFLAGS)
+
+libmurphy_plugin_replicate_ladir =				\
+		$(includedir)/murphy
+
+libmurphy_plugin_replicate_la_SOURCES =				\
+		$(REPLICATE_PLUGIN_SOURCES)			\
+		$(REPLICATE_PLUGIN_LOADER)
+
+libmurphy_plugin_replicate_la_CFLAGS =			 	\
+		$(REPLICATE_PLUGIN_CFLAGS)			\
+		$(AM_CFLAGS)
+
+libmurphy_plugin_replicate_la_LDFLAGS =			 	\
+		-Wl,-version-script=linker-script.replicate	\
+		-version-info @MURPHY_VERSION_INFO@
+
+libmurphy_plugin_replicate_la_LIBADD =				\
+		libmurphy-core.la   				\
+		libmurphy-common.la 				\
+		murphy-db/mql/libmql.la				\
+		murphy-db/mqi/libmqi.la				\
+		murphy-db/mdb/libmdb.la
+
+libmurphy_plugin_replicate_la_DEPENDENCIES =	\
+		linker-script.replicate		\
+	$(filter %.la, $(libmurphy_plugin_replicate_la_LIBADD))
+else
+libmurphy_plugin_replicate_la_SOURCES = $(REPLICATE_PLUGIN_SOURCES)
+libmurphy_plugin_replicate_la_CFLAGS  = $(REPLICATE_PLUGIN_CFLAGS) \
+				   $(MURPHY_CFLAGS) $(AM_CFLAGS)
+libmurphy_plugin_replicate_la_LDFLAGS  = -module -avoid-version
+libmurphy_plugin_replicate_la_LIBADD  = $(REPLICATE_PLUGIN_LIBS)
+plugin_LTLIBRARIES         += libmurphy-plugin-replicate.la
+endif
+endif
+
+# linkedin replicate plugin linker script generation
+linker-script.replicate: $(REPLICATE_PLUGIN_LOADER:%.c=%.h)
+	$(QUIET_GEN)$(top_builddir)/build-aux/gen-linker-script -q \
+		-P "$(CC)" -c "$(libmurphy_replicate_la_CFLAGS)" -o $@ $^
+
+clean-linker-script::
+	-rm -f linker-script.replicate
 
 # Lua plugin
 LUA_PLUGIN_SOURCES = plugins/plugin-lua.c

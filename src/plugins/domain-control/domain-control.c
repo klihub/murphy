@@ -283,6 +283,59 @@ static void process_set(pep_proxy_t *proxy, set_msg_t *set)
 }
 
 
+static void process_create(pep_proxy_t *proxy, register_msg_t *crt)
+{
+    int         error;
+    const char *errmsg;
+
+    if (create_proxy_tables(proxy, crt->tables, crt->ntable, &error, &errmsg)) {
+        msg_send_ack(proxy, crt->seq);
+    }
+    else
+        msg_send_nak(proxy, crt->seq, error, errmsg);
+}
+
+
+static void process_drop(pep_proxy_t *proxy, drop_msg_t *drop)
+{
+    int         error;
+    const char *errmsg;
+
+    if (delete_proxy_tables(proxy, drop->ids, drop->nid, &error, &errmsg)) {
+        msg_send_ack(proxy, drop->seq);
+    }
+    else
+        msg_send_nak(proxy, drop->seq, error, errmsg);
+}
+
+
+static void process_subscribe(pep_proxy_t *proxy, register_msg_t *sub)
+{
+    int         error;
+    const char *errmsg;
+
+    if (create_proxy_watches(proxy, sub->watches, sub->nwatch,
+                             &error, &errmsg)) {
+        msg_send_ack(proxy, sub->seq);
+    }
+    else
+        msg_send_nak(proxy, sub->seq, error, errmsg);
+}
+
+
+static void process_unsubscribe(pep_proxy_t *proxy, drop_msg_t *unsub)
+{
+    int         error;
+    const char *errmsg;
+
+    if (delete_proxy_watches(proxy, unsub->ids, unsub->nid, &error, &errmsg)) {
+        msg_send_ack(proxy, unsub->seq);
+    }
+    else
+        msg_send_nak(proxy, unsub->seq, error, errmsg);
+}
+
+
 static void process_invoke(pep_proxy_t *proxy, invoke_msg_t *invoke)
 {
     mrp_context_t          *ctx = proxy->pdp->ctx;
@@ -370,6 +423,18 @@ static void process_message(pep_proxy_t *proxy, msg_t *msg)
     case MSG_TYPE_SET:
         process_set(proxy, &msg->set);
         break;
+    case MSG_TYPE_CREATE:
+        process_create(proxy, &msg->crt);
+        break;
+    case MSG_TYPE_DROP:
+        process_drop(proxy, &msg->drop);
+        break;
+    case MSG_TYPE_SUBSCRIBE:
+        process_subscribe(proxy, &msg->sub);
+        break;
+    case MSG_TYPE_UNSUBSCRIBE:
+        process_unsubscribe(proxy, &msg->unsub);
+        break;
     case MSG_TYPE_INVOKE:
         process_invoke(proxy, &msg->invoke);
         break;
@@ -440,11 +505,14 @@ static int msg_op_create_notify(pep_proxy_t *proxy)
 }
 
 
-static int msg_op_update_notify(pep_proxy_t *proxy, int tblid, mql_result_t *r)
+static int msg_op_update_notify(pep_proxy_t *proxy, const char *tblname,
+                                int tblid, mql_result_t *r,
+                                const char *describe)
 {
     int n;
 
-    n = msg_update_notify((mrp_msg_t *)proxy->notify_msg, tblid, r);
+    n = msg_update_notify((mrp_msg_t *)proxy->notify_msg, tblname, tblid, r,
+                          describe);
 
     if (n >= 0) {
         proxy->notify_ncolumn += n;
@@ -599,11 +667,14 @@ static int wrt_op_create_notify(pep_proxy_t *proxy)
 }
 
 
-static int wrt_op_update_notify(pep_proxy_t *proxy, int tblid, mql_result_t *r)
+static int wrt_op_update_notify(pep_proxy_t *proxy, const char *tblname,
+                                int tblid, mql_result_t *r,
+                                const char *describe)
 {
     int n;
 
-    n = json_update_notify((mrp_json_t *)proxy->notify_msg, tblid, r);
+    n = json_update_notify((mrp_json_t *)proxy->notify_msg, tblname, tblid, r,
+                           describe);
 
     if (n >= 0) {
         proxy->notify_ncolumn += n;

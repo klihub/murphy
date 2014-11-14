@@ -56,7 +56,6 @@ typedef struct {
     const char      *addrstr;            /* server address */
     int              zone;               /* run in zone control mode */
     int              verbose;            /* verbose mode */
-    int              audio;              /* subscribe for audio_playback_* */
     mrp_mainloop_t  *ml;                 /* murphy mainloop */
     void            *dc;                 /* domain controller */
     brl_t           *brl;                /* breedline for terminal input */
@@ -142,17 +141,23 @@ static stream_t streams[] = {
 #define ANY_WHERE  NULL
 
 mrp_domctl_table_t media_tables[] = {
-    MRP_DOMCTL_TABLE("test-devices", DEVICE_COLUMNS, DEVICE_INDEX),
-    MRP_DOMCTL_TABLE("test-streams", STREAM_COLUMNS, STREAM_INDEX),
+    MRP_DOMCTL_TABLE(0, "test-devices", DEVICE_COLUMNS, DEVICE_INDEX),
+    MRP_DOMCTL_TABLE(1, "test-streams", STREAM_COLUMNS, STREAM_INDEX),
 };
+
+#define TID_DEVICES 0
+#define TID_STREAMS 1
 
 mrp_domctl_watch_t media_watches[] = {
-    MRP_DOMCTL_WATCH("test-devices", DEVICE_SELECT, DEVICE_WHERE, 0),
-    MRP_DOMCTL_WATCH("test-streams", STREAM_SELECT, STREAM_WHERE, 0),
-    MRP_DOMCTL_WATCH("audio_playback_owner", SELECT_ALL, ANY_WHERE, 0),
-    MRP_DOMCTL_WATCH("audio_playback_users", SELECT_ALL, ANY_WHERE, 0),
+    MRP_DOMCTL_WATCH(0, "test-devices", DEVICE_SELECT, DEVICE_WHERE, 0),
+    MRP_DOMCTL_WATCH(1, "test-streams", STREAM_SELECT, STREAM_WHERE, 0),
 };
 
+#define WID_DEVICES 0
+#define WID_STREAMS 1
+
+int ntable = 0;
+int nwatch = 0;
 
 /*
  * zone and call definitions
@@ -222,16 +227,20 @@ static call_t calls[] = {
 #define CALL_WHERE  NULL
 
 mrp_domctl_table_t zone_tables[] = {
-    MRP_DOMCTL_TABLE("test-zones", ZONE_COLUMNS, ZONE_INDEX),
-    MRP_DOMCTL_TABLE("test-calls", CALL_COLUMNS, CALL_INDEX),
+    MRP_DOMCTL_TABLE(0, "test-zones", ZONE_COLUMNS, ZONE_INDEX),
+    MRP_DOMCTL_TABLE(1, "test-calls", CALL_COLUMNS, CALL_INDEX),
 };
 
+#define TID_ZONES 0
+#define TID_CALLS 1
+
 mrp_domctl_watch_t zone_watches[] = {
-    MRP_DOMCTL_WATCH("test-zones", ZONE_SELECT, ZONE_WHERE, 0),
-    MRP_DOMCTL_WATCH("test-calls", CALL_SELECT, CALL_WHERE, 0),
-    MRP_DOMCTL_WATCH("audio_playback_owner", SELECT_ALL, ANY_WHERE, 0),
-    MRP_DOMCTL_WATCH("audio_playback_users", SELECT_ALL, ANY_WHERE, 0),
+    MRP_DOMCTL_WATCH(0, "test-zones", ZONE_SELECT, ZONE_WHERE, 0),
+    MRP_DOMCTL_WATCH(1, "test-calls", CALL_SELECT, CALL_WHERE, 0),
 };
+
+#define WID_ZONES  0
+#define WID_CALLS  1
 
 mrp_domctl_table_t *exports;
 int                 nexport;
@@ -701,6 +710,90 @@ void update_calls(mrp_domctl_data_t *data)
 }
 
 
+void subscribe_status(mrp_domctl_t *dc, int errcode,
+                      const char *errmsg, void *user_data)
+{
+    MRP_UNUSED(dc);
+    MRP_UNUSED(user_data);
+
+    if (errcode != 0)
+        error_msg("Failed to subscribe to table (error %d, %s)",
+                  errcode, errmsg);
+    else
+        info_msg("Successfully subscribed to table.");
+}
+
+
+void subscribe_table(client_t *c, const char *params)
+{
+    mrp_domctl_watch_t  w;
+    char                table[256], columns[256];
+    const char         *where, *p, *n;
+    int                 len;
+
+    p = strchr(params, ' ');
+
+    if (p == NULL) {
+        snprintf(table, sizeof(table), "%s", params);
+        columns[0] = '*';
+        columns[1] = '\0';
+        where      = NULL;
+    }
+    else {
+        while (*p == ' ')
+            p++;
+        len = p - params - 1;
+        snprintf(table, sizeof(table), "%*.*s", len, len, params);
+
+        n = strchr(p, ' ');
+
+        if (n == NULL) {
+            snprintf(columns, sizeof(columns), "%s", p);
+            where = NULL;
+        }
+        else {
+            while (*n == ' ')
+                n++;
+
+            len = n - p;
+            snprintf(columns, sizeof(columns), "%*.*s", len, len, p);
+            where = n;
+        }
+    }
+
+    w.table       = table;
+    w.id          = nwatch++;
+    w.mql_columns = columns;
+    w.mql_where   = where;
+
+    if (!mrp_domctl_subscribe_tables(c->dc, &w, 1, subscribe_status, c))
+        error_msg("Failed to subscribe to table '%s'.", params);
+}
+
+
+void unsubscribe_status(mrp_domctl_t *dc, int errcode,
+                        const char *errmsg, void *user_data)
+{
+    MRP_UNUSED(dc);
+    MRP_UNUSED(user_data);
+
+    if (errcode != 0)
+        error_msg("Failed to unsubscribe from table (error %d, %s)",
+                  errcode, errmsg);
+    else
+        info_msg("Successfully unsubscribed from table.");
+}
+
+
+void unsubscribe_table(client_t *c, const char *params)
+{
+    uint32_t w = strtoul(params, NULL, 10);
+
+    if (!mrp_domctl_unsubscribe_tables(c->dc, &w, 1, unsubscribe_status, c))
+        error_msg("Failed to unsubscribe from table '%s'.", params);
+}
+
+
 void update_imports(client_t *c, mrp_domctl_data_t *data, int ntable)
 {
     int i;
@@ -884,6 +977,12 @@ static void input_cb(brl_t *brl, const char *input, void *user_data)
     else if (!strncmp(input, "zone "  , len=sizeof("zone ")   - 1)) {
         set_zone_state(client, input + len);
     }
+    else if (!strncmp(input, "subscribe ", len=sizeof("subscribe ") - 1)) {
+        subscribe_table(client, input + len);
+    }
+    else if (!strncmp(input, "unsubscribe ", len=sizeof("unsubscribe ") - 1)) {
+        unsubscribe_table(client, input + len);
+    }
 }
 
 
@@ -1011,8 +1110,10 @@ static void dump_data(mrp_domctl_data_t *table)
     const char         *t;
     int                 n, l;
 
-    info_msg("Table #%d: %d rows x %d columns", table->id,
+    info_msg("Table #%d ('%s'): %d rows x %d columns", table->id, table->name,
              table->nrow, table->ncolumn);
+    if (table->columns != NULL)
+        info_msg("    column definition: '%s'", table->columns);
 
     for (i = 0; i < table->nrow; i++) {
         row = table->rows[i];
@@ -1180,17 +1281,17 @@ static void client_setup(client_t *c)
             exports = media_tables;
             nexport = MRP_ARRAY_SIZE(media_tables);
             imports = zone_watches;
-            nimport = MRP_ARRAY_SIZE(zone_watches) - (c->audio ? 0 : 2);
+            nimport = MRP_ARRAY_SIZE(zone_watches);
         }
         else {
             exports = zone_tables;
             nexport = MRP_ARRAY_SIZE(zone_tables);
             imports = media_watches;
-            nimport = MRP_ARRAY_SIZE(media_watches) - (c->audio ? 0 : 2);
+            nimport = MRP_ARRAY_SIZE(media_watches);
         }
 
-        if (c->audio)
-            info_msg("Will subscribe for audio_playback_* tables.");
+        ntable = nexport;
+        nwatch = nimport;
 
         dc = mrp_domctl_create(c->zone ? "zone-ctrl" : "media-ctrl", ml,
                                exports, nexport, imports, nimport,
@@ -1290,7 +1391,6 @@ static void print_usage(const char *argv0, int exit_code, const char *fmt, ...)
            "The possible options are:\n"
            "  -s, --server <address>     connect to murphy at given address\n"
            "  -z, --zone                 run as zone controller\n"
-           "  -A, --audio                subscribe for audio_playback*\n"
            "  -v, --verbose              run in verbose mode\n"
            "  -h, --help                 show this help on usage\n",
            argv0);
@@ -1308,17 +1408,15 @@ static void client_set_defaults(client_t *c)
     c->addrstr = MRP_DEFAULT_DOMCTL_ADDRESS;
     c->zone    = FALSE;
     c->verbose = FALSE;
-    c->audio   = FALSE;
 }
 
 
 int parse_cmdline(client_t *c, int argc, char **argv)
 {
-#   define OPTIONS "vAzhs:"
+#   define OPTIONS "vzhs:"
     struct option options[] = {
         { "zone"      , no_argument      , NULL, 'z' },
         { "verbose"   , optional_argument, NULL, 'v' },
-        { "audio"     , no_argument      , NULL, 'A' },
         { "server"    , required_argument, NULL, 's' },
         { "help"      , no_argument      , NULL, 'h' },
         { NULL, 0, NULL, 0 }
@@ -1332,11 +1430,6 @@ int parse_cmdline(client_t *c, int argc, char **argv)
         switch (opt) {
         case 'z':
             c->zone = TRUE;
-            break;
-
-        case 'A':
-            c->audio = TRUE;
-            c->verbose = TRUE;
             break;
 
         case 'v':
