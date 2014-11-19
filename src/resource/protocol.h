@@ -33,10 +33,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
 
 #include <murphy/common/msg.h>
 
-#define RESPROTO_DEFAULT_ADDRESS      "unxs:@murphy-resource-native"
+#define RESPROTO_DEFAULT_ADDRESS      "unxs:%s/murphy-resource-native"
 #define RESPROTO_DEFAULT_ADDRVAR      "MURPHY_RESOURCE_ADDRESS"
 
 
@@ -89,15 +91,41 @@ typedef enum {
 } mrp_resproto_state_t;
 
 
-static inline const char *mrp_resource_get_default_address(void)
+#define BUFLEN 128
+static inline char *mrp_resource_get_default_address(void)
 {
-    const char *addr;
+    char *addr;
 
-    if ((addr = getenv(RESPROTO_DEFAULT_ADDRVAR)) == NULL)
-        return RESPROTO_DEFAULT_ADDRESS;
+    if ((addr = getenv(RESPROTO_DEFAULT_ADDRVAR)) == NULL) {
+        const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
+        int ret;
+        char buf[BUFLEN];
+        char xdgbuf[BUFLEN];
+
+        if (xdg_runtime_dir) {
+            int len = strlen(xdg_runtime_dir);
+            if (len >= BUFLEN)
+                return NULL;
+
+            strncpy(xdgbuf, xdg_runtime_dir, len);
+        }
+        else {
+            ret = snprintf(xdgbuf, BUFLEN, "/run/home/%d", getuid());
+            if (ret < 0 || ret == BUFLEN)
+                return NULL;
+        }
+
+        ret = snprintf(buf, BUFLEN, RESPROTO_DEFAULT_ADDRESS, xdgbuf);
+
+        if (ret < 0 || ret == BUFLEN)
+            return NULL;
+
+        return strdup(buf);
+    }
     else
-        return addr;
+        return strdup(addr);
 }
+#undef BUFLEN
 
 #endif  /* __MURPHY_RESOURCE_PROTOCOL_H__ */
 

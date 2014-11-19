@@ -1685,7 +1685,7 @@ static void parse_arguments(client_t *client, int argc, char **argv)
 int main(int argc, char **argv)
 {
     client_t *client = mrp_allocz(sizeof(client_t));
-    char     *addr = RESPROTO_DEFAULT_ADDRESS;
+    char     *addr = mrp_resource_get_default_address();
 
     mrp_log_set_mask(MRP_LOG_UPTO(MRP_LOG_DEBUG));
     mrp_log_set_target(MRP_LOG_TO_STDOUT);
@@ -1732,6 +1732,7 @@ int main(int argc, char **argv)
     resource_def_array_free(client->resources);
     str_array_free(client->class_names);
     str_array_free(client->zone_names);
+    free(addr);
     mrp_free(client);
 }
 

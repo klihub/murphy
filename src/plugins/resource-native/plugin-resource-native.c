@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #include <lualib.h>
 #include <lauxlib.h>
@@ -1007,20 +1008,56 @@ static int initiate_transport(mrp_plugin_t *plugin)
     mrp_context_t    *ctx   = plugin->ctx;
     mrp_plugin_arg_t *args  = plugin->args;
     resource_data_t  *data  = (resource_data_t *)plugin->data;
-    const char       *addr  = args[ARG_ADDRESS].str;
+    char             *addr  = mrp_strdup(args[ARG_ADDRESS].str);
     int               flags = MRP_TRANSPORT_REUSEADDR;
     bool              stream;
 
-    if (addr == NULL)
-        addr = mrp_resource_get_default_address();
+    if (addr == NULL) {
+        char *c_addr = mrp_resource_get_default_address();
+        if (!c_addr)
+            return -1;
+
+        addr = mrp_strdup(c_addr);
+        free(c_addr);
+    }
+
+    if (!addr)
+        return -1;
 
     data->alen = mrp_transport_resolve(NULL, addr, &data->saddr,
                                        sizeof(data->saddr), &data->atyp);
 
     if (data->alen <= 0) {
-        mrp_log_error("%s: failed to resolve transport arddress '%s'",
+        mrp_log_error("%s: failed to resolve transport address '%s'",
                       plugin->instance, addr);
+        mrp_free(addr);
         return -1;
+    }
+
+    /* remove old socket if it exists */
+    if (strncmp(addr, "unxs", 4) == 0) {
+        char *path = data->saddr.unx.sun_path;
+        if (path[0] == '/') {
+            struct stat statbuf;
+            /* if local socket and file exists,
+             * remove it */
+            if (stat(path, &statbuf) == 0) {
+                if (S_ISSOCK(statbuf.st_mode)) {
+                    if (unlink(path) < 0) {
+                        mrp_log_error("%s: error removing the old socket",
+                                plugin->instance);
+                        mrp_free(addr);
+                        return -1;
+                    }
+                }
+                else {
+                    mrp_log_error("%s: a file where the socket should be",
+                            plugin->instance);
+                    mrp_free(addr);
+                    return -1;
+                }
+            }
+        }
     }
 
 
@@ -1036,21 +1073,25 @@ static int initiate_transport(mrp_plugin_t *plugin)
 
     if (!data->listen) {
         mrp_log_error("%s: can't create listening transport",plugin->instance);
+        mrp_free(addr);
         return -1;
     }
 
     if (!mrp_transport_bind(data->listen, &data->saddr, data->alen)) {
         mrp_log_error("%s: can't bind to address %s", plugin->instance, addr);
+        mrp_free(addr);
         return -1;
     }
 
     if (stream && !mrp_transport_listen(data->listen, 0)) {
         mrp_log_error("%s: can't listen for connections", plugin->instance);
+        mrp_free(addr);
         return -1;
     }
 
     mrp_log_info("%s: listening for connections on %s", plugin->instance,addr);
 
+    mrp_free(addr);
     return 0;
 }
 

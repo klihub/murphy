@@ -469,6 +469,7 @@ mrp_res_context_t *mrp_res_create(mrp_mainloop_t *ml,
     const char *type;
     mrp_htbl_config_t conf;
     mrp_res_context_t *cx = mrp_allocz(sizeof(mrp_res_context_t));
+    char *addr = NULL, *c_addr;
 
     if (!cx)
         goto error;
@@ -511,7 +512,18 @@ mrp_res_context_t *mrp_res_create(mrp_mainloop_t *ml,
 
     /* connect to Murphy */
 
-    alen = mrp_transport_resolve(NULL, mrp_resource_get_default_address(),
+    c_addr = mrp_resource_get_default_address();
+    if (!c_addr)
+        goto error;
+
+    addr = mrp_strdup(c_addr);
+    free(c_addr);
+
+    if (!addr) {
+        goto error;
+    }
+
+    alen = mrp_transport_resolve(NULL, addr,
             &cx->priv->saddr, sizeof(cx->priv->saddr), &type);
 
     cx->priv->transp = mrp_transport_create(cx->priv->ml, type,
@@ -541,6 +553,7 @@ error:
 
     mrp_res_error("error connecting to server");
     destroy_context(cx);
+    mrp_free(addr);
 
     return NULL;
 }
