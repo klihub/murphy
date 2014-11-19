@@ -59,7 +59,7 @@ end
 -- load the dbus resource plugin
 if m:plugin_exists('resource-dbus') then
     m:try_load_plugin('resource-dbus', {
-        dbus_bus = "system",
+        dbus_bus = "session",
         dbus_service = "org.Murphy",
         dbus_track = true,
         default_zone = "driver",
@@ -101,6 +101,8 @@ else
     m:info("No domain-control plugin found...")
 end
 
+
+--[[
 
 -- define application classes
 application_class { name="interrupt", priority=99, modal=true , share=false, order="fifo" }
@@ -188,6 +190,8 @@ resource.class {
      name = "video_recording",
      shareable = false
 }
+
+--]]
 
 -- test for creating selections
 mdb.select {

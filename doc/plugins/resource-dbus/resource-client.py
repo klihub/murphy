@@ -529,10 +529,10 @@ def main(args):
     DBusGMainLoop(set_as_default=True)
     mainloop = gobject.MainLoop()
 
-    bus = dbus.SystemBus()
+    bus = dbus.SessionBus()
 
     if not bus:
-        print("ERROR: failed to get system bus")
+        print("ERROR: failed to get session bus")
         exit(1)
 
     # Create the manager for handling resource sets.
