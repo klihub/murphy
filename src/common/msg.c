@@ -144,8 +144,7 @@ static inline mrp_msg_field_t *create_field(uint16_t tag, va_list *ap)
     switch (type) {
     case MRP_MSG_FIELD_STRING:
         CREATE(f, tag, type, char *, str, str, fail);
-        f->str = mrp_strdup(f->str);
-        if (f->str == NULL)
+        if (f->str != NULL && (f->str = mrp_strdup(f->str)) == NULL)
             goto fail;
         break;
     case MRP_MSG_FIELD_BOOL:
@@ -952,7 +951,7 @@ ssize_t mrp_msg_default_encode(mrp_msg_t *msg, void **bufp)
 
             switch (f->type) {
             case MRP_MSG_FIELD_STRING:
-                len = strlen(f->str) + 1;
+                len = f->str ? strlen(f->str) + 1 : 0;
                 MRP_MSGBUF_PUSH(&mb, htobe32(len), 1, nomem);
                 MRP_MSGBUF_PUSH_DATA(&mb, f->str, len, 1, nomem);
                 break;
@@ -1109,7 +1108,7 @@ mrp_msg_t *mrp_msg_default_decode(void *buf, size_t size)
             if (len > 0)
                 value = MRP_MSGBUF_PULL_DATA(&mb, len, 1, nodata);
             else
-                value = "";
+                value = NULL;
             if (!mrp_msg_append(msg, tag, type, value))
                 goto fail;
             break;
