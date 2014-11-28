@@ -897,6 +897,68 @@ linker-script.resource_backend: $(libmurphy_resource_backend_la_HEADERS)
 clean-linker-script::
 	-rm -f linker-script.resource_backend
 
+
+###################################
+# murphy resource proxy library
+#
+
+if BUILD_RESOURCES
+RESOURCE_PROXY_LIBRARY = libmurphy-resource-proxy.la
+else
+RESOURCE_PROXY_LIBRARY =
+endif
+
+if BUILD_RESOURCES
+lib_LTLIBRARIES += $(RESOURCE_PROXY_LIBRARY)
+
+libmurphy_resource_proxy_ladir =                     \
+		$(includedir)/murphy/resource-proxy
+
+libmurphy_resource_proxy_la_HEADERS =                        \
+		resource/data-types.h           \
+		resource/common-api.h           \
+		resource/client-api.h           \
+		resource/config-api.h                 \
+		resource-proxy/client.h              \
+		resource-proxy/socket.h
+
+libmurphy_resource_proxy_la_REGULAR_SOURCES =                \
+		resource-proxy/client.c			\
+		resource-proxy/socket.c
+
+libmurphy_resource_proxy_la_SOURCES =                        \
+		$(libmurphy_resource_proxy_la_REGULAR_SOURCES)
+
+libmurphy_resource_proxy_la_CFLAGS =		\
+		$(AM_CFLAGS)			\
+		$(LUA_CFLAGS)
+
+libmurphy_resource_proxy_la_LDFLAGS =                        \
+		-Wl,-version-script=linker-script.resource_proxy \
+		-version-info @MURPHY_VERSION_INFO@
+
+libmurphy_resource_proxy_la_LIBADD =     \
+		libmurphy-core.la          \
+		libmurphy-common.la        \
+		murphy-db/mql/libmql.la    \
+		murphy-db/mqi/libmqi.la    \
+		murphy-db/mdb/libmdb.la    \
+		$(LUA_LIBS)
+
+libmurphy_resource_proxy_la_DEPENDENCIES =	\
+		linker-script.resource_proxy	\
+		$(filter %.la, $(libmurphy_resource_proxy_la_LIBADD))
+endif
+
+# resource linker script generation
+linker-script.resource_proxy: $(libmurphy_resource_proxy_la_HEADERS)
+	$(QUIET_GEN)$(top_builddir)/build-aux/gen-linker-script -q \
+		-P "$(CC)" -c "$(libmurphy_resource_proxy_la_CFLAGS)" -o $@ $^
+
+clean-linker-script::
+	-rm -f linker-script.resource_proxy
+
+
 ##########################
 # readline replacement
 #
@@ -1172,7 +1234,7 @@ RESOURCE_DBUS_PLUGIN_LIBS    =					\
 				libmurphy-dbus-libdbus.la	\
 				libmurphy-core.la		\
 				libmurphy-common.la		\
-				$(RESOURCE_LIBRARY)
+				$(RESOURCE_PROXY_LIBRARY)
 
 if !DISABLED_PLUGIN_RESOURCE_DBUS
 if BUILTIN_PLUGIN_RESOURCE_DBUS
@@ -1256,7 +1318,7 @@ PLUGIN_RESOURCE_NATIVE_CFLAGS =						\
 
 PLUGIN_RESOURCE_NATIVE_LIBS =       					\
 		libmurphy-common.la					\
-		$(RESOURCE_LIBRARY)                   			\
+		$(RESOURCE_PROXY_LIBRARY)                   			\
 		$(LUA_LIBS)
 
 plugin_resource_native_la_SOURCES = $(PLUGIN_RESOURCE_NATIVE_SOURCES)
@@ -1275,6 +1337,29 @@ resource_client_SOURCES = plugins/resource-native/resource-client.c
 resource_client_CFLAGS  = $(AM_CFLAGS)
 resource_client_LDADD   =  libmurphy-common.la
 endif
+
+
+# resource proxy plugin
+if BUILD_RESOURCES
+PLUGIN_RESOURCE_PROXY_REGULAR_SOURCES = 				\
+		plugins/plugin-resource-proxy.c
+PLUGIN_RESOURCE_PROXY_SOURCES = 					\
+		$(PLUGIN_RESOURCE_PROXY_REGULAR_SOURCES)
+PLUGIN_RESOURCE_PROXY_CFLAGS =
+
+PLUGIN_RESOURCE_PROXY_LIBS =       					\
+		libmurphy-common.la					\
+		$(RESOURCE_PROXY_LIBRARY)
+
+plugin_resource_proxy_la_SOURCES = $(PLUGIN_RESOURCE_PROXY_SOURCES)
+plugin_resource_proxy_la_CFLAGS  = $(PLUGIN_RESOURCE_PROXY_CFLAGS)	\
+				    $(MURPHY_CFLAGS) $(AM_CFLAGS)
+plugin_resource_proxy_la_LDFLAGS = -module -avoid-version
+plugin_resource_proxy_la_LIBADD  = $(PLUGIN_RESOURCE_PROXY_LIBS)
+
+plugin_LTLIBRARIES += plugin-resource-proxy.la
+endif
+
 
 # domain control plugin
 DOMAIN_CONTROL_PLUGIN_SOURCES = plugins/domain-control/plugin-domain-control.c \
@@ -1384,61 +1469,6 @@ linker-script.domain-control: $(DOMAIN_CONTROL_PLUGIN_LOADER:%.c=%.h)
 clean-linker-script::
 	-rm -f linker-script.domain-control
 
-# DB replicator plugin
-REPLICATE_PLUGIN_SOURCES = plugins/replicate/plugin-replicate.c
-REPLICATE_PLUGIN_LOADER  = linkedin-replicate-loader.c
-
-REPLICATE_PLUGIN_CFLAGS  = $(AM_CFLAGS)
-REPLICATE_PLUGIN_LIBS    = libmurphy-replicate.la
-
-if !DISABLED_PLUGIN_REPLICATE
-if BUILTIN_PLUGIN_REPLICATE
-LINKEDIN_PLUGINS        += libmurphy-plugin-replicate.la
-lib_LTLIBRARIES         += libmurphy-plugin-replicate.la
-REPLICATE_PLUGIN_CFLAGS += $(BUILTIN_CFLAGS)
-
-libmurphy_plugin_replicate_ladir =				\
-		$(includedir)/murphy
-
-libmurphy_plugin_replicate_la_SOURCES =				\
-		$(REPLICATE_PLUGIN_SOURCES)			\
-		$(REPLICATE_PLUGIN_LOADER)
-
-libmurphy_plugin_replicate_la_CFLAGS =			 	\
-		$(REPLICATE_PLUGIN_CFLAGS)			\
-		$(AM_CFLAGS)
-
-libmurphy_plugin_replicate_la_LDFLAGS =			 	\
-		-Wl,-version-script=linker-script.replicate	\
-		-version-info @MURPHY_VERSION_INFO@
-
-libmurphy_plugin_replicate_la_LIBADD =				\
-		libmurphy-core.la   				\
-		libmurphy-common.la 				\
-		murphy-db/mql/libmql.la				\
-		murphy-db/mqi/libmqi.la				\
-		murphy-db/mdb/libmdb.la
-
-libmurphy_plugin_replicate_la_DEPENDENCIES =	\
-		linker-script.replicate		\
-	$(filter %.la, $(libmurphy_plugin_replicate_la_LIBADD))
-else
-libmurphy_plugin_replicate_la_SOURCES = $(REPLICATE_PLUGIN_SOURCES)
-libmurphy_plugin_replicate_la_CFLAGS  = $(REPLICATE_PLUGIN_CFLAGS) \
-				   $(MURPHY_CFLAGS) $(AM_CFLAGS)
-libmurphy_plugin_replicate_la_LDFLAGS  = -module -avoid-version
-libmurphy_plugin_replicate_la_LIBADD  = $(REPLICATE_PLUGIN_LIBS)
-plugin_LTLIBRARIES         += libmurphy-plugin-replicate.la
-endif
-endif
-
-# linkedin replicate plugin linker script generation
-linker-script.replicate: $(REPLICATE_PLUGIN_LOADER:%.c=%.h)
-	$(QUIET_GEN)$(top_builddir)/build-aux/gen-linker-script -q \
-		-P "$(CC)" -c "$(libmurphy_replicate_la_CFLAGS)" -o $@ $^
-
-clean-linker-script::
-	-rm -f linker-script.replicate
 
 # Lua plugin
 LUA_PLUGIN_SOURCES = plugins/plugin-lua.c
@@ -1508,7 +1538,7 @@ murphyd_CFLAGS  =			\
 murphyd_LDADD  =				\
 		$(BUILTIN_LIBS)         	\
 		$(LINKEDIN_PLUGINS)		\
-		$(RESOURCE_LIBRARY)		\
+		$(RESOURCE_PROXY_LIBRARY)		\
 		libmurphy-resolver.la		\
 		libmurphy-lua-decision.la	\
 		libmurphy-core.la		\

@@ -508,7 +508,7 @@ esac
 internal=""; it=""
 external=""; et=""
 disabled=""; dt=""
-for plugin in $all_plugins; do 
+for plugin in $all_plugins; do
     type=internal
 
     for p in ${dynamic_plugins//,/ }; do
@@ -566,6 +566,7 @@ AM_CONDITIONAL(DISABLED_PLUGIN_DOMAIN_CONTROL,
 AM_CONDITIONAL(DISABLED_PLUGIN_REPLICATE,
                [check_if_disabled replicate])
 AM_CONDITIONAL(DISABLED_PLUGIN_SYSTEMD,  [check_if_disabled systemd])
+AM_CONDITIONAL(DISABLED_PLUGIN_RESOURCE_PROXY, [check_if_disabled resource-proxy])
 
 AM_CONDITIONAL(BUILTIN_PLUGIN_TEST,     [check_if_internal test])
 AM_CONDITIONAL(BUILTIN_PLUGIN_DBUS,     [check_if_internal dbus])
@@ -579,9 +580,10 @@ AM_CONDITIONAL(BUILTIN_PLUGIN_REPLICATE,
                [check_if_internal replicate])
 AM_CONDITIONAL(BUILTIN_PLUGIN_LUA,      [check_if_internal lua])
 AM_CONDITIONAL(BUILTIN_PLUGIN_SYSTEMD,  [check_if_internal systemd])
+AM_CONDITIONAL(BUILTIN_PLUGIN_RESOURCE_PROXY, [check_if_internal resource-proxy])
 
 # Check for Check (unit test framework).
-PKG_CHECK_MODULES(CHECK, 
+PKG_CHECK_MODULES(CHECK,
                   check >= 0.9.4,
                   [has_check="yes"], [has_check="no"])
 AM_CONDITIONAL(HAVE_CHECK, test "x$has_check" = "xyes")
