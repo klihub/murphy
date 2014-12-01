@@ -31,6 +31,14 @@
 #include <errno.h>
 #include <resource/protocol.h>
 
+static int proxy_resource_add_to_prset_queue(
+        resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset,
+        enum resource_proxy_action action, uint32_t request_id);
+
+static int proxy_resource_process_queue(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset);
+
 bool fetch_resource_set_state(mrp_msg_t *msg, void **pcursor,
                                      uint16_t *pstate)
 {
@@ -406,6 +414,8 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
 
                 if (status < 0) {
                     mrp_debug("Request failed");
+                    /* TODO: all requests made with this resource set must be
+                     * errors from now on. */
                     return;
                 }
 
@@ -414,17 +424,27 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     return;
                 }
 
+                mrp_debug("CREATE resp: rset id: %u", rset_id);
+
+                prset->id = rset_id;
+                prset->initialized = TRUE;
+
+                if (!mrp_htbl_insert(ctx->ids_to_proxy_rs,
+                        u_to_p(prset->id), prset))
+                    return;
+
+                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
                 break;
             }
         case RESPROTO_DESTROY_RESOURCE_SET:
             {
                 mrp_debug("RESPROTO_DESTROY_RESOURCE_SET, seqno %d", seqno);
 
-                break;
+                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
+                return;
             }
         case RESPROTO_ACQUIRE_RESOURCE_SET:
             {
-                resource_proxy_resource_set_t *prset;
                 uint32_t rset_id;
                 int16_t status;
 
@@ -439,13 +459,18 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                 if (!fetch_resource_set_id(msg, &cursor, &rset_id) ||
                         !fetch_status(msg, &cursor, &status)) {
                     mrp_debug("Error parsing message");
+                    return;
                 }
 
+                mrp_debug("ACQUIRE resp: rset id: %u, status: %u", rset_id,
+                        status);
+#if 0
+                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
+#endif
                 break;
             }
         case RESPROTO_RELEASE_RESOURCE_SET:
             {
-                resource_proxy_resource_set_t *prset;
                 uint32_t rset_id;
                 int16_t status;
 
@@ -460,14 +485,18 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                 if (!fetch_resource_set_id(msg, &cursor, &rset_id) ||
                         !fetch_status(msg, &cursor, &status)) {
                     mrp_debug("Error parsing message");
+                    return;
                 }
 
+                mrp_debug("RELEASE resp: rset id: %u, status: %u", rset_id,
+                        status);
+#if 0
+                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
+#endif
                 break;
             }
         case RESPROTO_RESOURCES_EVENT:
             {
-                resource_proxy_resource_set_t *prset = NULL;
-
                 uint32_t rset_id;
 
                 mrp_resproto_state_t status;
@@ -486,7 +515,7 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     prset = mrp_htbl_lookup(ctx->seqnos_to_proxy_rs,
                             u_to_p(seqno));
                     if (!prset) {
-                        mrp_debug("Resource set already destroyed");
+                        mrp_debug("Resource set not found by seqno");
                     }
                 }
 
@@ -500,6 +529,21 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
 
                 status = status_;
 
+                if (prset) {
+                    /* saniity check */
+                    if (rset_id != prset->id) {
+                        mrp_debug("resource set mismatch: (msg: %u vs map: %u)",
+                                rset_id, prset->id);
+                        /* The protocol is really strange here. We need to get
+                           the real resource id from the event message instead
+                           of waiting for create request callback. */
+                        if (prset->id == 0) {
+                            mrp_debug("updating resource set id");
+                            prset->id = rset_id;
+                        }
+                    }
+                }
+
                 mrp_debug("event for rset %u: (%d, %u, %u)", rset_id, status,
                         grant, advice);
 
@@ -507,7 +551,7 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     prset = mrp_htbl_lookup(ctx->ids_to_proxy_rs,
                             u_to_p(rset_id));
                     if (!prset) {
-                        mrp_debug("Failed to find resource set %u", rset_id);
+                        mrp_debug("Resource set not found by id");
                         return;
                     }
                 }
@@ -536,6 +580,8 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                         return;
                     }
 
+                    /* TODO: update resource data here? */
+
                     if (!fetch_attribute_array(msg, &cursor, 128, attrs,
                             &n_attrs)) {
                         mrp_debug("failed to parse attributes from message");
@@ -548,22 +594,40 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
 
                 if (prset->rs->event) {
                     mrp_debug("calling event handler");
+
+                    /* request.id needs to be tied to the particular
+                     * operation that we were processing at the moment */
+
+                    mrp_debug("calling event handler: request_id %d, rs %p",
+                            prset->rs->request.id, prset->rs);
+
                     prset->rs->event(prset->rs->request.id, prset->rs,
                             prset->rs->user_data);
                 }
 
-                break;
+                return;
             }
         default:
             mrp_debug("Unhandled resource protocol request %d, seqno %d",
                     request_type, seqno);
-            break;
+            return;
     }
 
+run_queue:
 
-    if (prset && seqno) {
+    mrp_debug("checking the queue for %p (%s)", prset,
+            (prset && prset->in_progress) ? "TRUE" : "FALSE");
+
+    if (prset && prset->in_progress) {
+        mrp_debug("request no longer in progress");
         prset->rs->request.id = 0;
-        /* TODO: go through the queue of commands relating to this resource set */
+        prset->in_progress = FALSE;
+        /* Go through the queue of commands relating to this resource set.
+           The reason for this is that the resource set id is not yet known
+           after the "create" call before the resource set callback has been
+           processed. This means that "acquire" and "release" commands might be
+           sent with wrong ID. */
+        proxy_resource_process_queue(ctx, prset);
     }
 }
 
@@ -714,13 +778,17 @@ int resource_proxy_get_initial_values(resource_proxy_global_context_t *ctx)
 }
 
 
-int release_resource_set_request(resource_proxy_global_context_t *ctx,
+static int release_resource_set(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset)
 {
     mrp_msg_t *msg = NULL;
 
+    mrp_debug("%p, %p", ctx, prset);
+
     if (!ctx || !prset || !ctx->connected)
         return -1;
+
+    prset->in_progress = TRUE;
 
     ctx->next_seqno++;
 
@@ -734,13 +802,12 @@ int release_resource_set_request(resource_proxy_global_context_t *ctx,
     if (!msg)
         return -1;
 
-    prset->t.seqno = ctx->next_seqno;
-
     mrp_htbl_insert(ctx->seqnos_to_proxy_rs, u_to_p(ctx->next_seqno), prset);
 
     if (!mrp_transport_send(ctx->transport, msg))
         goto error_remove_seqno;
 
+    prset->seqno = ctx->next_seqno;
     mrp_msg_unref(msg);
     return 0;
 
@@ -752,14 +819,37 @@ error_remove_seqno:
 }
 
 
-int acquire_resource_set_request(resource_proxy_global_context_t *ctx,
+int release_resource_set_request(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset, uint32_t request_id)
+{
+    mrp_debug("%p, %p, %u", ctx, prset, request_id);
+
+    if (!prset->in_progress) {
+        prset->rs->request.id = request_id;
+        return release_resource_set(ctx, prset);
+    }
+    else {
+        mrp_debug("queuing the releasing of resource set %p (possible id %u)",
+                prset, prset->id);
+        proxy_resource_add_to_prset_queue(ctx, prset, RP_RELEASE_RSET,
+                request_id);
+    }
+
+    return 0;
+}
+
+
+static int acquire_resource_set(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset)
 {
     mrp_msg_t *msg = NULL;
 
+    mrp_debug("%p, %p", ctx, prset);
+
     if (!ctx || !prset || !ctx->connected)
         return -1;
 
+    prset->in_progress = TRUE;
     ctx->next_seqno++;
 
     msg = mrp_msg_create(
@@ -772,13 +862,12 @@ int acquire_resource_set_request(resource_proxy_global_context_t *ctx,
     if (!msg)
         return -1;
 
-    prset->t.seqno = ctx->next_seqno;
-
     mrp_htbl_insert(ctx->seqnos_to_proxy_rs, u_to_p(ctx->next_seqno), prset);
 
     if (!mrp_transport_send(ctx->transport, msg))
         goto error_remove_seqno;
 
+    prset->seqno = ctx->next_seqno;
     mrp_msg_unref(msg);
     return 0;
 
@@ -790,9 +879,28 @@ error_remove_seqno:
 }
 
 
-int create_resource_set_request(resource_proxy_global_context_t *ctx,
-        resource_proxy_resource_set_t *prset, const char *class_name,
-        const char *zone_name)
+int acquire_resource_set_request(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset, uint32_t request_id)
+{
+    mrp_debug("%p, %p, %u", ctx, prset, request_id);
+
+    if (!prset->in_progress) {
+        prset->rs->request.id = request_id;
+        return acquire_resource_set(ctx, prset);
+    }
+    else {
+        mrp_debug("queuing the acquisition of resource set %p (possible id %u)",
+                prset, prset->id);
+        proxy_resource_add_to_prset_queue(ctx, prset, RP_ACQUIRE_RSET,
+                request_id);
+    }
+
+    return 0;
+}
+
+
+static int create_resource_set(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset)
 {
     mrp_msg_t *msg = NULL;
     uint32_t j;
@@ -800,12 +908,15 @@ int create_resource_set_request(resource_proxy_global_context_t *ctx,
     mrp_list_hook_t *entry, *n;
     mrp_attr_def_t *attr_defs;
 
+    mrp_debug("%p, %p", ctx, prset);
+
     if (!ctx || !prset || !ctx->connected)
         return -1;
 
     if (prset->rs->auto_release.client)
         rset_flags |= RESPROTO_RSETFLAG_AUTORELEASE;
 
+    prset->in_progress = TRUE;
     ctx->next_seqno++;
 
     msg = mrp_msg_create(
@@ -814,8 +925,8 @@ int create_resource_set_request(resource_proxy_global_context_t *ctx,
             RESPROTO_CREATE_RESOURCE_SET,
             RESPROTO_RESOURCE_FLAGS, MRP_MSG_FIELD_UINT32, rset_flags,
             RESPROTO_RESOURCE_PRIORITY, MRP_MSG_FIELD_UINT32, 0,
-            RESPROTO_CLASS_NAME, MRP_MSG_FIELD_STRING, class_name,
-            RESPROTO_ZONE_NAME, MRP_MSG_FIELD_STRING, zone_name,
+            RESPROTO_CLASS_NAME, MRP_MSG_FIELD_STRING, prset->class_name,
+            RESPROTO_ZONE_NAME, MRP_MSG_FIELD_STRING, prset->zone_name,
             RESPROTO_MESSAGE_END);
 
     if (!msg)
@@ -892,6 +1003,7 @@ int create_resource_set_request(resource_proxy_global_context_t *ctx,
     if (!mrp_transport_send(ctx->transport, msg))
         goto error_remove_seqno;
 
+    prset->seqno = ctx->next_seqno;
     mrp_msg_unref(msg);
 
     return 0;
@@ -905,10 +1017,35 @@ error_remove_seqno:
 }
 
 
-int destroy_resource_set(resource_proxy_global_context_t *ctx,
+int create_resource_set_request(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset, const char *class_name,
+        const char *zone_name, uint32_t request_id)
+{
+    mrp_debug("%p, %p, %s, %s, %u", ctx, prset, class_name, zone_name, request_id);
+
+    prset->class_name = mrp_strdup(class_name);
+    prset->zone_name = mrp_strdup(zone_name);
+
+    if (!prset->in_progress) {
+        prset->rs->request.id = request_id;
+        return create_resource_set(ctx, prset);
+    }
+    else {
+        mrp_debug("queuing the creation of resource set %p", prset);
+        proxy_resource_add_to_prset_queue(ctx, prset, RP_CREATE_RSET,
+                request_id);
+    }
+
+    return 0;
+}
+
+
+static int destroy_resource_set(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset)
 {
     mrp_msg_t *msg;
+
+    mrp_debug("%p, %p", ctx, prset);
 
     if (!ctx || !prset || !ctx->connected)
         return -1;
@@ -919,7 +1056,7 @@ int destroy_resource_set(resource_proxy_global_context_t *ctx,
             RESPROTO_SEQUENCE_NO, MRP_MSG_FIELD_UINT32, ctx->next_seqno,
             RESPROTO_REQUEST_TYPE, MRP_MSG_FIELD_UINT16,
             RESPROTO_DESTROY_RESOURCE_SET,
-            RESPROTO_RESOURCE_ID, MRP_MSG_FIELD_UINT32, prset->rs->id,
+            RESPROTO_RESOURCE_ID, MRP_MSG_FIELD_UINT32, prset->id,
             RESPROTO_MESSAGE_END);
 
     if (!msg)
@@ -938,6 +1075,100 @@ error_remove_seqno:
     mrp_msg_unref(msg);
     return -1;
 }
+
+
+int destroy_resource_set_request(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset)
+{
+    /* this cannot be proxied, since the client is about to free the resource
+       set very soon */
+
+    if (!prset->initialized) {
+        /* TODO: if not created yet, destroy as soon as it is created */
+        return 0;
+    }
+
+    return destroy_resource_set(ctx, prset);
+}
+
+
+int proxy_resource_add_to_prset_queue(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset, enum resource_proxy_action action,
+        uint32_t request_id)
+{
+    resource_proxy_rset_operation_t *op;
+
+    if (!ctx || !prset)
+        return -1;
+
+    op = mrp_allocz(sizeof(*op));
+
+    if (!op)
+        return -1;
+
+    mrp_list_init(&op->hook);
+    op->action = action;
+    op->request_id = request_id;
+
+    mrp_list_append(&prset->operation_queue, &op->hook);
+
+    mrp_debug("queued operation (%p) %u, request_id %u", op, op->action,
+            op->request_id);
+
+    return 0;
+}
+
+
+int proxy_resource_process_queue(resource_proxy_global_context_t *ctx,
+        resource_proxy_resource_set_t *prset)
+{
+    resource_proxy_rset_operation_t *op;
+
+    if (!ctx || !prset)
+        return -1;
+
+    if (!prset->operation_queue.next) {
+        return -1;
+    }
+
+    if (mrp_list_empty(&prset->operation_queue)) {
+        return 0;
+    }
+
+    op = mrp_list_entry(prset->operation_queue.next,
+            resource_proxy_rset_operation_t, hook);
+
+    if (op) {
+        mrp_list_delete(&op->hook);
+
+        switch (op->action) {
+            case RP_CREATE_RSET:
+                create_resource_set(ctx, prset);
+                break;
+            case RP_ACQUIRE_RSET:
+                acquire_resource_set(ctx, prset);
+                break;
+            case RP_RELEASE_RSET:
+                release_resource_set(ctx, prset);
+                break;
+            case RP_DESTROY_RSET:
+                destroy_resource_set(ctx, prset);
+                break;
+        }
+
+        /* the client resource id needs to be put in place */
+
+        mrp_debug("processing operation queue: op (%p) %u, request_id %u", op,
+                op->action, op->request_id);
+        prset->rs->request.id = op->request_id;
+
+        return 0;
+    }
+
+    mrp_debug("error");
+    return -1;
+}
+
 
 /*
  * Local Variables:

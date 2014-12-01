@@ -51,17 +51,6 @@
  * murphy (that does the real resource decisions).
  */
 
-enum transaction_status {
-    RP_TRANSACTION_PENDING,
-    RP_TRANSACTION_SUCCESS,
-    RP_TRANSACTION_FAILURE,
-};
-
-enum resource_proxy_set_state {
-    RP_SET_CREATED,
-    RP_SET_DESTROYED,
-};
-
 enum resource_proxy_status {
     RP_CONNECTED,
     RP_DISCONNECTED,
@@ -96,6 +85,8 @@ typedef struct {
 
     mrp_htbl_t *resource_names_to_attribute_defs;
 
+    mrp_htbl_t *rs_to_proxy_rs;
+
     /* master resource definitions */
 
     uint32_t num_defs;
@@ -114,9 +105,9 @@ typedef struct {
     bool queried_resources;
     bool queried_classes;
 
-    char *zone;
+    uint32_t next_rset_id;
 
-    int next_rs_id;
+    char *zone;
 
 } resource_proxy_global_context_t;
 
@@ -126,15 +117,38 @@ typedef struct {
 
 } resource_proxy_client_t;
 
+
+enum resource_proxy_action {
+    RP_CREATE_RSET,
+    RP_ACQUIRE_RSET,
+    RP_RELEASE_RSET,
+    RP_DESTROY_RSET,
+};
+
+
 typedef struct {
-    enum resource_proxy_set_state state;
+    enum resource_proxy_action action;
+    mrp_list_hook_t hook;
+    uint32_t request_id;
+} resource_proxy_rset_operation_t;
+
+
+typedef struct {
     mrp_resource_set_t *rs;
 
     uint32_t id; /* protocol id */
 
+    /* processing of the operation queue */
+    bool in_progress;
+    mrp_list_hook_t operation_queue;
 
-    /* TODO: needs to be a list of ongoing transactions */
-    transaction_t t;
+    char *class_name;
+    char *zone_name;
+
+    bool initialized;
+
+    uint32_t seqno;
+
 } resource_proxy_resource_set_t;
 
 

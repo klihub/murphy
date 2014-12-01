@@ -43,15 +43,15 @@ int resource_proxy_get_initial_values(resource_proxy_global_context_t *ctx);
 
 int create_resource_set_request(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset, const char *class_name,
-        const char *zone_name);
+        const char *zone_name, uint32_t request_id);
 
-int destroy_resource_set(resource_proxy_global_context_t *ctx,
+int destroy_resource_set_request(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset);
 
 int acquire_resource_set_request(resource_proxy_global_context_t *ctx,
-        resource_proxy_resource_set_t *prset);
+        resource_proxy_resource_set_t *prset, uint32_t request_id);
 
 int release_resource_set_request(resource_proxy_global_context_t *ctx,
-        resource_proxy_resource_set_t *prset);
+        resource_proxy_resource_set_t *prset, uint32_t request_id);
 
 #endif

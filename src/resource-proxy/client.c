@@ -534,6 +534,7 @@ mrp_resource_def_t *mrp_resource_definition_find_by_name(const char *name)
         rdef++;
     } while (rdef->name);
 
+    mrp_debug("not found");
     return NULL;
 }
 
@@ -561,6 +562,7 @@ static mrp_resource_t *find_resource_by_name(mrp_resource_set_t *resource_set,
             return res;
     }
 
+    mrp_debug("not found");
     return NULL;
 }
 
@@ -627,13 +629,20 @@ static resource_proxy_global_context_t *initialize_ctx()
     cfg.comp = mrp_string_comp;
     ctx->resource_names_to_attribute_defs = mrp_htbl_create(&cfg);
 
+    /* finally mapping from resource sets to proxy resource sets */
+
+    cfg.free = NULL;
+    cfg.hash = int_hash;
+    cfg.comp = int_comp;
+    ctx->rs_to_proxy_rs = mrp_htbl_create(&cfg);
 
     if (!ctx->clients_to_proxy_clients ||
             !ctx->ids_to_proxy_rs || !ctx->seqnos_to_proxy_rs ||
-            !ctx->resource_names_to_attribute_defs)
+            !ctx->resource_names_to_attribute_defs || !ctx->rs_to_proxy_rs)
         goto error;
 
-    ctx->next_rs_id = 1;
+    /* this is what we tell clients */
+    ctx->next_rset_id = 1;
 
     global_ctx = ctx;
 
@@ -654,6 +663,9 @@ error:
 
         if (ctx->clients_to_proxy_clients)
             mrp_htbl_destroy(ctx->clients_to_proxy_clients, FALSE);
+
+        if (ctx->rs_to_proxy_rs)
+            mrp_htbl_destroy(ctx->rs_to_proxy_rs, FALSE);
 
         mrp_free(ctx);
     }
@@ -754,10 +766,25 @@ static void free_resource_set(mrp_resource_set_t *rset,
 static void free_proxy_resource_set(resource_proxy_global_context_t *ctx,
         resource_proxy_resource_set_t *prset)
 {
-    if (!ctx || !prset)
+    mrp_list_hook_t *entry, *n;
+
+    if (!prset)
+        return;
+
+    mrp_list_foreach(&prset->operation_queue, entry, n) {
+        resource_proxy_rset_operation_t *op = mrp_list_entry(entry,
+                resource_proxy_rset_operation_t, hook);
+        mrp_list_delete(&op->hook);
+        mrp_free(op);
+    }
+
+    if (!ctx)
         return;
 
     free_resource_set(prset->rs, ctx);
+
+    mrp_free(prset->class_name);
+    mrp_free(prset->zone_name);
     mrp_free(prset);
 }
 
@@ -790,15 +817,19 @@ void mrp_resource_client_destroy(mrp_resource_client_t *client)
                 continue;
             }
 
-            prset = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs,
-                    u_to_p(rset->id));
+            prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs, rset);
 
             if (!prset) {
                 mrp_debug("proxy resource set not found");
                 continue;
             }
 
-            destroy_resource_set(global_ctx, prset);
+            mrp_htbl_remove(global_ctx->seqnos_to_proxy_rs, u_to_p(prset->seqno),
+                    FALSE);
+            mrp_htbl_remove(global_ctx->ids_to_proxy_rs, u_to_p(prset->id),
+                    FALSE);
+            mrp_htbl_remove(global_ctx->rs_to_proxy_rs, prset->rs, FALSE);
+            destroy_resource_set_request(global_ctx, prset);
             free_proxy_resource_set(global_ctx, prset);
         }
 
@@ -837,6 +868,7 @@ mrp_resource_set_t *mrp_resource_client_find_set(mrp_resource_client_t *client,
         }
     }
 
+    mrp_debug("not found");
     return NULL;
 }
 
@@ -1054,17 +1086,18 @@ int mrp_application_class_add_resource_set(const char *class_name,
     mrp_debug("%s, %s, %p, %d", class_name, zone_name, resource_set,
             request_id);
 
-    prset = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs,
-            u_to_p(resource_set->id));
+    prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs,
+            resource_set);
     if (!prset) {
         mrp_debug("error");
         return -1;
     }
 
-    resource_set->request.id = request_id;
+    /* resource_set->request.id = request_id; */
 
     /* TODO: mangle zone name */
-    create_resource_set_request(global_ctx, prset, class_name, zone_name);
+    create_resource_set_request(global_ctx, prset, class_name, zone_name,
+            request_id);
 
     return 0;
 }
@@ -1078,8 +1111,8 @@ mrp_resource_set_t *mrp_resource_set_create(mrp_resource_client_t *client,
 {
     /* local: create a proxy resource set object */
 
-    mrp_resource_set_t *rs = NULL;
-    resource_proxy_resource_set_t *prs = NULL;
+    mrp_resource_set_t *rset = NULL;
+    resource_proxy_resource_set_t *prset = NULL;
 
     mrp_debug("%p, %d, %d, %d, %p, %p", client, auto_release, dont_wait,
             priority, event_cb, user_data);
@@ -1090,58 +1123,57 @@ mrp_resource_set_t *mrp_resource_set_create(mrp_resource_client_t *client,
     if (!global_ctx)
         return NULL;
 
-    rs = mrp_allocz(sizeof(*rs));
-    if (!rs)
+    rset = mrp_allocz(sizeof(*rset));
+    if (!rset)
         goto error;
 
-    rs->id = global_ctx->next_rs_id++;
-
-    prs = mrp_allocz(sizeof(*prs));
-    if (!prs)
+    prset = mrp_allocz(sizeof(*prset));
+    if (!prset)
         goto error;
 
-    rs->state = mrp_resource_no_request;
+    rset->state = mrp_resource_no_request;
 
-    prs->id = rs->id;
+    mrp_list_init(&prset->operation_queue);
 
-    rs->auto_release.client = auto_release;
-    rs->auto_release.current = auto_release;
-    rs->dont_wait.client = dont_wait;
-    rs->dont_wait.current = dont_wait;
+    rset->auto_release.client = auto_release;
+    rset->auto_release.current = auto_release;
+    rset->dont_wait.client = dont_wait;
+    rset->dont_wait.current = dont_wait;
 
-    mrp_list_init(&rs->resource.list);
-    mrp_list_init(&rs->client.list);
-    rs->resource.share = false;
+    mrp_list_init(&rset->resource.list);
+    mrp_list_init(&rset->client.list);
+    rset->resource.share = false;
 
-    mrp_list_append(&client->resource_sets, &rs->client.list);
-    rs->client.ptr = client;
-    rs->client.reqno = MRP_RESOURCE_REQNO_INVALID;
+    mrp_list_append(&client->resource_sets, &rset->client.list);
+    rset->client.ptr = client;
+    rset->client.reqno = MRP_RESOURCE_REQNO_INVALID;
 
-    mrp_list_init(&rs->class.list);
-    rs->class.priority = priority;
+    mrp_list_init(&rset->class.list);
+    rset->class.priority = priority;
 
-    rs->event = event_cb;
-    rs->user_data = user_data;
+    rset->event = event_cb;
+    rset->user_data = user_data;
 
-    prs->rs = rs;
-    prs->state = RP_SET_CREATED;
+    prset->rs = rset;
+    prset->rs->id = global_ctx->next_rset_id++;
+    prset->id = 0; /* this will be updated from master */
 
-    if (!mrp_htbl_insert(global_ctx->ids_to_proxy_rs, u_to_p(rs->id), prs))
+    if (!mrp_htbl_insert(global_ctx->rs_to_proxy_rs, rset, prset))
         goto error;
 
-    mrp_debug("create resource set %d (%p, proxy %p)", rs->id, rs, prs);
+    mrp_debug("create resource set %d (%p, proxy %p)", rset->id, rset, prset);
 
-    return rs;
+    return rset;
 
  error:
     mrp_debug("error");
 
-    if (rs) {
-        mrp_htbl_remove(global_ctx->ids_to_proxy_rs, u_to_p(rs->id), FALSE);
-        mrp_free(rs);
+    if (rset) {
+        mrp_htbl_remove(global_ctx->rs_to_proxy_rs, rset, FALSE);
+        mrp_free(rset);
     }
 
-    mrp_free(prs);
+    mrp_free(prset);
 
     return NULL;
 }
@@ -1161,16 +1193,19 @@ void mrp_resource_set_destroy(mrp_resource_set_t *resource_set)
         return;
     }
 
-    prset = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs,
-            u_to_p(resource_set->id));
+    prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs, resource_set);
     if (!prset) {
         free_resource_set(resource_set, global_ctx);
         return;
     }
 
-    mrp_htbl_remove(global_ctx->ids_to_proxy_rs, u_to_p(prset->rs->id), FALSE);
+    mrp_debug("prset: %p (%u, %u)", prset, prset->id, prset->seqno);
 
-    destroy_resource_set(global_ctx, prset);
+    mrp_htbl_remove(global_ctx->seqnos_to_proxy_rs, u_to_p(prset->seqno), FALSE);
+    mrp_htbl_remove(global_ctx->ids_to_proxy_rs, u_to_p(prset->id), FALSE);
+    mrp_htbl_remove(global_ctx->rs_to_proxy_rs, prset->rs, FALSE);
+
+    destroy_resource_set_request(global_ctx, prset);
     free_proxy_resource_set(global_ctx, prset);
 
     return;
@@ -1181,9 +1216,14 @@ uint32_t mrp_get_resource_set_id(mrp_resource_set_t *resource_set)
 {
     /* local: get proxy resource set id after application class assignment  */
 
-    if (!resource_set)
-        return 0;
+    mrp_debug("%p", resource_set);
 
+    if (!resource_set) {
+        mrp_debug("error");
+        return 0;
+    }
+
+    mrp_debug("return %u", resource_set->id);
     return resource_set->id;
 }
 
@@ -1195,9 +1235,12 @@ mrp_resource_state_t mrp_get_resource_set_state(mrp_resource_set_t
 
     mrp_debug("%p", resource_set);
 
-    if (!resource_set)
+    if (!resource_set) {
+        mrp_debug("error");
         return mrp_resource_release;
+    }
 
+    mrp_debug("return %u", resource_set->id);
     return resource_set->state;
 }
 
@@ -1354,17 +1397,16 @@ void mrp_resource_set_acquire(mrp_resource_set_t *resource_set,
     }
 
     resource_set->state = mrp_resource_acquire;
-    resource_set->request.id = request_id;
+    /* resource_set->request.id = request_id; */
 
-    prset = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs,
-            u_to_p(resource_set->id));
-
+    prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs,
+            resource_set);
     if (!prset) {
         mrp_debug("error");
         return;
     }
 
-    acquire_resource_set_request(global_ctx, prset);
+    acquire_resource_set_request(global_ctx, prset, request_id);
 }
 
 
@@ -1382,16 +1424,16 @@ void mrp_resource_set_release(mrp_resource_set_t *resource_set,
     }
 
     resource_set->state = mrp_resource_release;
-    resource_set->request.id = request_id;
+    /* resource_set->request.id = request_id; */
 
-    prset = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs,
-            u_to_p(resource_set->id));
+    prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs,
+            resource_set);
     if (!prset) {
         mrp_debug("error");
         return;
     }
 
-    release_resource_set_request(global_ctx, prset);
+    release_resource_set_request(global_ctx, prset, request_id);
 }
 
 
@@ -1588,6 +1630,7 @@ void mrp_destroy_resource_proxy(resource_proxy_global_context_t *ctx)
     mrp_htbl_destroy(ctx->resource_names_to_attribute_defs, TRUE);
     mrp_htbl_destroy(ctx->ids_to_proxy_rs, FALSE);
     mrp_htbl_destroy(ctx->seqnos_to_proxy_rs, FALSE);
+    mrp_htbl_destroy(ctx->rs_to_proxy_rs, FALSE);
 
     /* disconnect */
 
