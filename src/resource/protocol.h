@@ -102,12 +102,13 @@ static inline char *mrp_resource_get_default_address(void)
         char buf[BUFLEN];
         char xdgbuf[BUFLEN];
 
-        if (xdg_runtime_dir) {
-            int len = strlen(xdg_runtime_dir);
-            if (len >= BUFLEN)
-                return NULL;
+        memset(buf, 0, BUFLEN);
+        memset(xdgbuf, 0, BUFLEN);
 
-            strncpy(xdgbuf, xdg_runtime_dir, len);
+        if (xdg_runtime_dir) {
+            ret = snprintf(xdgbuf, BUFLEN, "%s", xdg_runtime_dir);
+            if (ret < 0 || ret == BUFLEN)
+                return NULL;
         }
         else {
             ret = snprintf(xdgbuf, BUFLEN, "/run/home/%d", getuid());
