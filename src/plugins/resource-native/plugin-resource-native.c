@@ -683,6 +683,8 @@ static void create_resource_set_request(client_t *client, mrp_msg_t *req,
                          RESPROTO_MESSAGE_END                                );
     if (!rpl || !mrp_transport_send(client->transp, rpl)) {
         mrp_log_error("%s: failed to send reply", plugin->instance);
+        if (rpl)
+            mrp_msg_unref(rpl);
         return;
     }
 
