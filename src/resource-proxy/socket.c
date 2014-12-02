@@ -585,8 +585,6 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                         return;
                     }
 
-                    /* TODO: update resource data here? */
-
                     if (!fetch_attribute_array(msg, &cursor, 128, attrs,
                             &n_attrs)) {
                         mrp_debug("failed to parse attributes from message");
@@ -1162,6 +1160,8 @@ int proxy_resource_process_queue(resource_proxy_global_context_t *ctx,
                 op->action, op->request_id);
         prset->rs->request.id = op->request_id;
 
+
+        mrp_free(op);
         return 0;
     }
 

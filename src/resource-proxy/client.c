@@ -1399,7 +1399,6 @@ void mrp_resource_set_acquire(mrp_resource_set_t *resource_set,
     }
 
     resource_set->state = mrp_resource_acquire;
-    /* resource_set->request.id = request_id; */
 
     prset = mrp_htbl_lookup(global_ctx->rs_to_proxy_rs,
             resource_set);
@@ -1464,7 +1463,7 @@ uint32_t mrp_resource_get_id(mrp_resource_t *resource)
 {
     /* local: get id from initial configuration */
 
-    if (!resource)
+    if (!resource || !resource->def)
         return 0;
 
     mrp_debug("%p", resource);
