@@ -224,7 +224,6 @@ bool fetch_attribute_array(mrp_msg_t *msg, void **pcursor,
         switch (type) {
         case MRP_MSG_FIELD_STRING:
             attr->type = mqi_string;
-            /* TODO: strdup? */
             attr->value.string = value.str;
             break;
         case MRP_MSG_FIELD_SINT32:
@@ -335,6 +334,7 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
             mrp_resource_def_t *rdef = ctx->defs;
             mrp_attr_t attrs[128];
             mrp_attr_def_t *copy;
+            const char *resource_name;
 
             mrp_debug("RESPROTO_QUERY_RESOURCES, seqno %d", seqno);
 
@@ -348,10 +348,10 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                 return;
             }
 
-            while (fetch_resource_name(msg, &cursor, &rdef[dim].name)) {
+            while (fetch_resource_name(msg, &cursor, &resource_name)) {
                 int n_attrs = 0;
 
-                rdef[dim].name = mrp_strdup(rdef[dim].name);
+                rdef[dim].name = mrp_strdup(resource_name);
 
                 mrp_debug("got resource name '%s'", rdef[dim].name);
 
@@ -392,6 +392,11 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     proxy_notify_clients(ctx, RP_CONNECTED);
                 }
             }
+            if (dim >= 128)
+                dim = 128 - 1;
+
+            /* NULL terminate the resource definition array */
+            memset(&rdef[dim], 0, sizeof(mrp_resource_def_t));
             break;
         }
         case RESPROTO_CREATE_RESOURCE_SET:
@@ -612,11 +617,6 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     request_type, seqno);
             return;
     }
-
-run_queue:
-
-    mrp_debug("checking the queue for %p (%s)", prset,
-            (prset && prset->in_progress) ? "TRUE" : "FALSE");
 
     if (prset && prset->in_progress) {
         mrp_debug("request no longer in progress");

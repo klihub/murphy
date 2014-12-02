@@ -236,7 +236,9 @@ void print_attribute(mrp_attr_t *attr)
                     attr->value.floating);
             break;
         default:
+            /*
             mrp_debug("corrupted attribute %s (%d)", attr->name, attr->type);
+            */
             break;
     }
 }
@@ -1240,7 +1242,7 @@ mrp_resource_state_t mrp_get_resource_set_state(mrp_resource_set_t
         return mrp_resource_release;
     }
 
-    mrp_debug("return %u", resource_set->id);
+    mrp_debug("return %u", resource_set->state);
     return resource_set->state;
 }
 
@@ -1467,7 +1469,7 @@ uint32_t mrp_resource_get_id(mrp_resource_t *resource)
 
     mrp_debug("%p", resource);
 
-    return resource->rsetid;
+    return resource->def->id;
 }
 
 
@@ -1497,6 +1499,8 @@ mrp_resource_mask_t mrp_resource_get_mask(mrp_resource_t *resource)
         mask = (mrp_resource_mask_t) 1 << resource->def->id;
     }
 
+    mrp_debug("mask for %s: 0x%08x", resource->def->name, mask);
+
     return mask;
 }
 
@@ -1514,22 +1518,45 @@ bool mrp_resource_is_shared(mrp_resource_t *resource)
 }
 
 
+struct resource_table_iter_s {
+    uint32_t id;
+    mrp_resource_set_t *rset;
+};
+
+
+int resource_table_iter_cb(void *key, void *object, void *user_data)
+{
+    struct resource_table_iter_s *i = user_data;
+    mrp_resource_set_t *rset = key;
+
+    MRP_UNUSED(object);
+
+    if (rset->id == i->id) {
+        i->rset = rset;
+        return MRP_HTBL_ITER_STOP;
+    }
+
+    return MRP_HTBL_ITER_MORE;
+}
+
+
 mrp_resource_set_t *mrp_resource_set_find_by_id(uint32_t id)
 {
     /* local: return proxy object */
 
-    resource_proxy_resource_set_t *prs = NULL;
+    struct resource_table_iter_s i;
 
     mrp_debug("%d", id);
+
+    i.id = id;
+    i.rset = NULL;
 
     if (!global_ctx)
         return NULL;
 
-    prs = mrp_htbl_lookup(global_ctx->ids_to_proxy_rs, u_to_p(id));
-    if (!prs)
-        return NULL;
+    mrp_htbl_foreach(global_ctx->rs_to_proxy_rs, resource_table_iter_cb, &i);
 
-    return prs->rs;
+    return i.rset;
 }
 
 
@@ -1589,9 +1616,6 @@ void mrp_resource_set_free_attribute(mrp_attr_t *attr)
 }
 
 
-/* called by plugin-resource-native -- should have no place here */
-void mrp_resource_configuration_init(void) { }
-
 
 resource_proxy_global_context_t *mrp_create_resource_proxy(mrp_mainloop_t *ml,
         const char *master_address, const char *zone)
@@ -1647,6 +1671,36 @@ void mrp_destroy_resource_proxy(resource_proxy_global_context_t *ctx)
 
     return;
 }
+
+
+/* called by plugin-resource-native -- should have no place here */
+
+void mrp_resource_configuration_init(void) { }
+
+
+/* these also have no place here, but console crashes if these are missing */
+
+int mrp_application_class_print(char *buf, int len, bool with_rsets)
+{
+    MRP_UNUSED(with_rsets);
+
+    snprintf(buf, len,
+            "NIH. Also, console printouts should have no place"
+            "in resource library.\n");
+
+    return 0;
+}
+
+
+int mrp_resource_owner_print(char *buf, int len)
+{
+    snprintf(buf, len,
+            "NIH. If somewhere, these should be implemented in plugins"
+            "that can query database and resource library.\n");
+
+    return 0;
+}
+
 
 /*
  * Local Variables:
