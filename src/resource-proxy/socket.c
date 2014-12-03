@@ -271,6 +271,32 @@ bool fetch_resource_name(mrp_msg_t *msg, void **pcursor,
 }
 
 
+/* The resource protocol has broken semantics; it's impossible to know if there
+ * will be a resource event after a completion message with the same sequence
+ * number. We do a workaround by just deleting the sequence mapping after a
+ * while.
+ */
+
+static void seqno_timer_cb(mrp_timer_t *t, void *user_data)
+{
+    resource_proxy_global_context_t *ctx;
+    /* there is a possiblity that the context is gone; re-fetch it */
+
+    ctx = resource_proxy_get_context();
+
+    if (!ctx) {
+        mrp_debug("context was gone");
+        mrp_del_timer(t);
+        return;
+    }
+
+    mrp_debug("removing mapping for seqno %u", p_to_u(user_data));
+
+    /* user data is the sequence number */
+    mrp_htbl_remove(ctx->seqnos_to_proxy_rs, user_data, FALSE);
+    mrp_del_timer(t);
+}
+
 
 static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                          mrp_sockaddr_t *addr, socklen_t addrlen,
@@ -429,8 +455,6 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     return;
                 }
 
-                mrp_debug("CREATE resp: rset id: %u", rset_id);
-
                 prset->id = rset_id;
                 prset->initialized = TRUE;
 
@@ -438,14 +462,16 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                         u_to_p(prset->id), prset))
                     return;
 
-                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
+                mrp_add_timer(ctx->ml, 3000, seqno_timer_cb, u_to_p(seqno));
+
+                mrp_debug("CREATE resp: rset id: %u", rset_id);
                 break;
             }
         case RESPROTO_DESTROY_RESOURCE_SET:
             {
                 mrp_debug("RESPROTO_DESTROY_RESOURCE_SET, seqno %d", seqno);
 
-                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
+                mrp_add_timer(ctx->ml, 3000, seqno_timer_cb, u_to_p(seqno));
                 return;
             }
         case RESPROTO_ACQUIRE_RESOURCE_SET:
@@ -467,11 +493,10 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     return;
                 }
 
+                mrp_add_timer(ctx->ml, 3000, seqno_timer_cb, u_to_p(seqno));
+
                 mrp_debug("ACQUIRE resp: rset id: %u, status: %u", rset_id,
                         status);
-#if 0
-                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
-#endif
                 break;
             }
         case RESPROTO_RELEASE_RESOURCE_SET:
@@ -493,11 +518,10 @@ static void recvfrom_msg(mrp_transport_t *transp, mrp_msg_t *msg,
                     return;
                 }
 
+                mrp_add_timer(ctx->ml, 3000, seqno_timer_cb, u_to_p(seqno));
+
                 mrp_debug("RELEASE resp: rset id: %u, status: %u", rset_id,
                         status);
-#if 0
-                mrp_htbl_remove(ctx->seqnos_to_proxy_rs, u_to_p(seqno), FALSE);
-#endif
                 break;
             }
         case RESPROTO_RESOURCES_EVENT:

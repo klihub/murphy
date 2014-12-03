@@ -36,6 +36,11 @@ static resource_proxy_global_context_t *global_ctx;
 
 /* helper functions */
 
+resource_proxy_global_context_t *resource_proxy_get_context()
+{
+    return global_ctx;
+}
+
 int proxy_notify_clients(resource_proxy_global_context_t *ctx,
         enum resource_proxy_status status)
 {
@@ -601,7 +606,7 @@ static void htbl_free_client(void *key, void *object)
     mrp_free(proxy_client);
 }
 
-static resource_proxy_global_context_t *initialize_ctx()
+static resource_proxy_global_context_t *initialize_ctx(mrp_mainloop_t *ml)
 {
     mrp_htbl_config_t cfg;
     resource_proxy_global_context_t *ctx = mrp_allocz(
@@ -610,6 +615,7 @@ static resource_proxy_global_context_t *initialize_ctx()
     if (!ctx)
         goto error;
 
+    ctx->ml = ml;
     ctx->refcount = 1;
 
     /* initialize the maps */
@@ -1615,11 +1621,10 @@ void mrp_resource_set_free_attribute(mrp_attr_t *attr)
 }
 
 
-
 resource_proxy_global_context_t *mrp_create_resource_proxy(mrp_mainloop_t *ml,
         const char *master_address, const char *zone)
 {
-    resource_proxy_global_context_t *ctx = initialize_ctx();
+    resource_proxy_global_context_t *ctx = initialize_ctx(ml);
 
     if (!ctx)
         return NULL;

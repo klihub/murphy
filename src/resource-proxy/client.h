@@ -67,6 +67,8 @@ typedef struct {
 
 typedef struct {
 
+    mrp_mainloop_t *ml;
+
     int refcount;
 
     /* mapping of resource set ids to proxy resource sets */
@@ -196,6 +198,9 @@ void proxy_str_array_free(proxy_string_array_t *arr);
 void proxy_attribute_array_def_free(mrp_attr_def_t *arr, uint32_t dim);
 
 mrp_attr_def_t *proxy_attribute_def_array_dup(uint32_t dim, mrp_attr_t *arr);
+
+/* get the global resource proxy context */
+resource_proxy_global_context_t *resource_proxy_get_context();
 
 /* resource API extension */
 
