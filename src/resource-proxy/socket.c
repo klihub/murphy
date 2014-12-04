@@ -671,6 +671,13 @@ void closed_evt(mrp_transport_t *transp, int error, void *user_data)
 
     proxy_notify_clients(ctx, RP_DISCONNECTED);
 
+    /* The reconnection method depends on the transport mechanism we are using.
+       If the connection was made using unix domain socket in the file system,
+       we can use inotify to wait for the socket to reappear. If the connection
+       was made over D-Bus, we can wait for the service to come up. However,
+       the final fallback has to be polling, because there is no other way to
+       really detect network hosts coming back up. */
+
     mrp_debug("closed");
 }
 
