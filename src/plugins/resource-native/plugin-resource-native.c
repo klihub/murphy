@@ -1125,7 +1125,7 @@ static void event_cb(mrp_event_watch_t *w, uint32_t id, int format,
 
     mrp_log_info("%s: got event 0x%x (%s):", plugin->instance, id, event);
 
-    if (data && event) {
+    if (data && event && event_data) {
         if (!strcmp(event, MRP_PLUGIN_EVENT_STARTED)) {
             success = mrp_msg_get(event_data,
                                   MRP_MSG_TAG_STRING(tag_inst, &inst),
