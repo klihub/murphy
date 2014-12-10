@@ -2348,6 +2348,28 @@ const char *mrp_event_name(uint32_t id)
 }
 
 
+char *mrp_event_dump_mask(mrp_event_mask_t *mask, char *buf, size_t size)
+{
+    char *p;
+    int   n, l;
+
+    MRP_UNUSED(mask);
+
+    p = buf;
+    l = (int)size;
+
+    n  = snprintf(p, l, "%s", "<...esaelp ,em tnemelpmi ,pleh>");
+
+    if (n >= l)
+        return NULL;
+
+    p += n;
+    l -= n;
+
+    return buf;
+}
+
+
 mrp_event_watch_t *mrp_event_add_watch(mrp_event_bus_t *bus, uint32_t id,
                                        mrp_event_watch_cb_t cb, void *user_data)
 {

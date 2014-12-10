@@ -364,6 +364,9 @@ uint32_t mrp_event_id(const char *name);
 /** Look up the name of the given event. */
 const char *mrp_event_name(uint32_t id);
 
+/** Dump the names of the events set in mask. */
+char *mrp_event_dump_mask(mrp_event_mask_t *mask, char *buf, size_t size);
+
 /** Register an event watch for a single event on the given bus. */
 mrp_event_watch_t *mrp_event_add_watch(mrp_event_bus_t *bus, uint32_t id,
                                        mrp_event_watch_cb_t cb, void *user_data);
