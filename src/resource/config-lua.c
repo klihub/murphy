@@ -39,7 +39,6 @@
 #include <murphy/common/debug.h>
 #include <murphy/core/lua-bindings/murphy.h>
 #include <murphy/core/lua-utils/object.h>
-#include <murphy/core/event.h>
 
 #include "config-lua.h"
 #include "resource-lua.h"
@@ -323,6 +322,7 @@ void mrp_resource_configuration_init(void)
     if (!initialised && (L =  mrp_lua_get_lua_state())) {
 
         uint32_t id;
+        int      flags;
 
         appclass_class_create(L);
         zone_class_create(L);
@@ -338,10 +338,11 @@ void mrp_resource_configuration_init(void)
 
         initialised = true;
 
-        id = mrp_get_event_id("resource-library-ready", FALSE);
+        id    = mrp_event_id("resource-library-ready");
+        flags = MRP_EVENT_SYNCHRONOUS;
 
         if (id != MRP_EVENT_UNKNOWN) {
-            mrp_emit_event(id, NULL);
+            mrp_event_emit_msg(MRP_GLOBAL_BUS, id, flags, MRP_MSG_END);
         }
     }
 }

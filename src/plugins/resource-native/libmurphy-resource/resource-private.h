@@ -31,6 +31,7 @@
 #define __MURPHY_RESOURCE_API_PRIVATE_H__
 
 #include <stdarg.h>
+#include <stdint.h>
 
 #include <murphy/common/log.h>
 
@@ -132,8 +133,9 @@ struct mrp_res_context_private_s {
     mrp_list_hook_t pending_sets;
 };
 
-uint32_t p_to_u(const void *p);
-void *u_to_p(uint32_t u);
+#define u_to_p(u) ((void *)(ptrdiff_t)(u))
+#define p_to_u(p) ((uint32_t)(ptrdiff_t)(p))
+
 
 /*
  * logging macros

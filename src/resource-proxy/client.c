@@ -32,8 +32,6 @@
 #include "client.h"
 #include "socket.h"
 
-#include <murphy/core/event.h>
-
 static resource_proxy_global_context_t *global_ctx;
 
 /* helper functions */
@@ -50,6 +48,7 @@ int proxy_notify_clients(resource_proxy_global_context_t *ctx,
      * be used to finally load the resource frontends. */
 
     uint32_t id = MRP_EVENT_UNKNOWN;
+    int      flags = MRP_EVENT_SYNCHRONOUS;
 
     MRP_UNUSED(ctx);
 
@@ -57,10 +56,10 @@ int proxy_notify_clients(resource_proxy_global_context_t *ctx,
 
     switch (status) {
         case RP_CONNECTED:
-            id = mrp_get_event_id("resource-library-ready", FALSE);
+            id = mrp_event_id("resource-library-ready");
             break;
         case RP_DISCONNECTED:
-            id = mrp_get_event_id("resource-library-not-ready", FALSE);
+            id = mrp_event_id("resource-library-not-ready");
             break;
         default:
             break;
@@ -68,7 +67,7 @@ int proxy_notify_clients(resource_proxy_global_context_t *ctx,
 
     if (id != MRP_EVENT_UNKNOWN) {
         mrp_debug("emit event %u", id);
-        mrp_emit_event(id, NULL);
+        mrp_event_emit_msg(MRP_GLOBAL_BUS, id, flags, MRP_MSG_END);
     }
 
     return 0;

@@ -34,7 +34,6 @@
 #include <murphy/common.h>
 
 #include <murphy/core/plugin.h>
-#include <murphy/core/event.h>
 
 #include "resource-proxy/client.h"
 

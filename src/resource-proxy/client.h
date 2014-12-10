@@ -154,38 +154,8 @@ typedef struct {
 } resource_proxy_resource_set_t;
 
 
-inline void *u_to_p(uint32_t u)
-{
-#ifdef __SIZEOF_POINTER__
-#if __SIZEOF_POINTER__ == 8
-    uint64_t o = u;
-#else
-    uint32_t o = u;
-#endif
-#else
-    uint32_t o = o;
-#endif
-    return (void *) o;
-}
-
-inline uint32_t p_to_u(const void *p)
-{
-#ifdef __SIZEOF_POINTER__
-#if __SIZEOF_POINTER__ == 8
-    uint32_t o = 0;
-    uint64_t big = (uint64_t) p;
-    o = big & 0xffffffff;
-#else
-    uint32_t o = (uint32_t) p;
-#endif
-#else
-    uint32_t o = p;
-#endif
-    return o;
-}
-
-#endif
-
+#define u_to_p(u) ((void *)(ptrdiff_t)(u))
+#define p_to_u(p) ((uint32_t)(ptrdiff_t)(p))
 
 
 int proxy_notify_clients(resource_proxy_global_context_t *ctx,
@@ -208,3 +178,6 @@ resource_proxy_global_context_t *mrp_create_resource_proxy(mrp_mainloop_t *ml,
         const char *master_address, const char *zone);
 
 void mrp_destroy_resource_proxy(resource_proxy_global_context_t *ctx);
+
+
+#endif
