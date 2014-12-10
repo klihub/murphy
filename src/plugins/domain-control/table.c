@@ -791,8 +791,8 @@ int create_proxy_watch(pep_proxy_t *proxy, uint32_t id,
                        int *error, const char **errmsg)
 {
     pdp_t       *pdp = proxy->pdp;
+    pep_watch_t *w   = NULL;
     pep_table_t *t;
-    pep_watch_t *w;
     bool         wildcard;
 
     t = lookup_watch_table(pdp, table);
