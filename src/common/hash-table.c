@@ -36,15 +36,16 @@
 #include <murphy/common/hash-table.h>
 
 /*
- * We used inlined allocation bitmasks if this is defined. Inlined masks will
+ * We use inlined allocation bitmasks if this is defined. Inlined masks can
  * save memory by putting the chunk allocation mask into the leftover memory
  * area after the last full-sized entry in the chunk.
  */
 #define __INLINED_MASKS__
 
 /* Note:
- * Technically CHUNKSIZE could be a per-table setting. It is always used
- * in a context where the table is also known.
+ * Technically CHUNKSIZE and {MIN,MAX}_BUCKETS could all be per-instance
+ * table settings. They are always used from a context where the table
+ * instance is also known.
  */
 
 #define MIN_BUCKETS   16                 /* use at least this many buckets */
@@ -115,8 +116,8 @@ static int calculate_sizes(mrp_hashtbl_t *t)
     int nent, chnk, mask, room;
 
     /*
-     * When inline masks are enabled we keep the chunk allocation bitmask
-     * including the bitmask bits in the chunk itself after the last hash
+     * When inline masks are enabled we keep the chunk allocation bitmask,
+     * including the bitmask bits, in the chunk itself after the last hash
      * entry. We need then to calculate nperchunk (the number of entries
      * that fit into a chunk) so that there is enough room spared at the
      * end for a bitmask of nperchunk bits. We do this with a brute-force
@@ -125,7 +126,11 @@ static int calculate_sizes(mrp_hashtbl_t *t)
      *   2) see if the last entry in the mask fits in CHUNKSIZE
      *   3) if not, reduce the usable size by the bitmask necessary for
      *      the unadjusted nperchunk entries and recalculate nperchunk.
-     *   4) Make a final verification that now we fit into CHUNKSIZE.
+     *   4) adjust if we can squeeze in more entries (the #if 1'd loop
+     *      below, I have never seen it being able to squeeze in even a
+     *      singe entry with any CHUNKSIZE 64 - 4K, so maybe I just miss
+     *      why it cannot happen even in theory)
+     *   5) Make a final verification that now we fit into CHUNKSIZE.
      */
 
     nent = (CHUNKSIZE - sizeof(hash_chunk_t)) / sizeof(hash_entry_t);
@@ -192,6 +197,79 @@ static int calculate_sizes(mrp_hashtbl_t *t)
 }
 
 
+static inline mrp_mask_t *chunk_mask(mrp_hashtbl_t *t, hash_chunk_t *c)
+{
+    mrp_mask_t *m;
+
+#ifdef __INLINED_MASKS__
+    uint32_t n = c->idx == t->nchunk - 1 && t->nlast ? t->nlast : t->nperchunk;
+
+    m = (void *)&c->entries[n];
+#else
+    MRP_UNUSED(t);
+
+    m = &c->used;
+#endif
+
+    return m;
+}
+
+
+static int chunk_mask_init(mrp_hashtbl_t *t, hash_chunk_t *c)
+{
+    mrp_mask_t *m = chunk_mask(t, c);
+
+#ifdef __INLINED_MASKS__
+    uint32_t n, size;
+
+    if (c->idx == t->nchunk - 1 && t->nlast) {
+        n    = t->nlast;
+        size = MRP_OFFSET(hash_chunk_t, entries[t->nlast]);
+        size += mrp_mask_inlined_size(t->nlast);
+    }
+    else {
+        n    = t->nperchunk;
+        size = CHUNKSIZE;
+    }
+
+    if (!mrp_mask_init_inlined(m, n, c, size))
+        return -1;
+#else
+    mrp_mask_init(m);
+
+    if (!mrp_mask_ensure(&c->used, n))
+        return -1;
+#endif
+
+    return 0;
+}
+
+
+static inline void chunk_mask_set(mrp_hashtbl_t *t, hash_chunk_t *c, int i)
+{
+    mrp_mask_t *m = chunk_mask(t, c);
+
+    mrp_mask_set(m, i);
+}
+
+
+static inline void chunk_mask_clear(mrp_hashtbl_t *t, hash_chunk_t *c, int i)
+{
+    mrp_mask_t *m = chunk_mask(t, c);
+
+    mrp_mask_clear(m, i);
+}
+
+
+static inline int chunk_mask_test(mrp_hashtbl_t *t, hash_chunk_t *c, int i)
+{
+    mrp_mask_t *m = chunk_mask(t, c);
+
+    return mrp_mask_test(m, i);
+}
+
+
+#if 0
 static inline mrp_mask_t *chunk_mask(hash_chunk_t *c, int nentry)
 {
     mrp_mask_t *m;
@@ -206,21 +284,82 @@ static inline mrp_mask_t *chunk_mask(hash_chunk_t *c, int nentry)
 
     return m;
 }
+#endif
 
 
 static int allocate_chunks(mrp_hashtbl_t *t, uint32_t nentry)
 {
     hash_chunk_t *c;
-    mrp_mask_t   *m;
-    uint32_t      nchunk, n, total, full, last, size, i;
+    uint32_t      total, rest, full, partial, size, idx, i;
 
     MRP_ASSERT(t->nlast == 0,
                "%s(): hash-table internal error, can't allocate more chunks, "
                "last chunk not full-sized", __FUNCTION__);
 
-    full = nentry / t->nperchunk;
-    last = nentry % t->nperchunk;
+    full    = nentry / t->nperchunk;
+    partial = nentry % t->nperchunk;
 
+    if (partial) {
+        total = t->nalloc + (full + 1) * t->nperchunk;
+
+        if (total <= t->nlimit) {
+            full++;
+            partial = 0;
+        }
+        else {
+            rest    = t->nlimit - t->nalloc;
+            full    = rest / t->nperchunk;
+            partial = rest % t->nperchunk;
+        }
+    }
+
+    mrp_debug("resizing by %u entries: %u -> %u (%u full + %u)", nentry,
+              t->nchunk, t->nchunk + full + partial ? 1 : 0, full, partial);
+
+    if (!mrp_reallocz(t->chunks, t->nchunk, t->nchunk + full + (partial?1:0)))
+        return -1;
+
+    idx = t->nchunk;
+    t->nchunk += full + (partial ? 1 : 0);
+    t->nalloc += full * t->nperchunk + partial;
+    t->nlast   = partial;
+
+    for (i = 0; i < full; i++) {
+        if (mrp_memalignz((void **)&c, CHUNKSIZE, CHUNKSIZE) < 0)
+            return -1;
+
+        mrp_debug("allocated new full chunk of %u bytes", CHUNKSIZE);
+
+        mrp_list_init(&c->hook);
+        mrp_list_append(&t->space, &c->hook);
+
+        t->chunks[idx] = c;
+        c->idx = idx++;
+
+        if (chunk_mask_init(t, c) < 0)
+            return -1;
+    }
+
+    if (partial) {
+        size = MRP_OFFSET(hash_chunk_t, entries[partial]);
+        size += mrp_mask_inlined_size(partial);
+
+        if (mrp_memalignz((void **)&c, CHUNKSIZE, size) < 0)
+            return -1;
+
+        mrp_debug("allocated new partial chunk of %u bytes", size);
+
+        mrp_list_init(&c->hook);
+        mrp_list_append(&t->space, &c->hook);
+
+        t->chunks[idx] = c;
+        c->idx = idx++;
+
+        if (chunk_mask_init(t, c) < 0)
+            return -1;
+    }
+
+#if 0
     /*
      * Notes:
      *    If we're not reaching our preset limit yet, we need to make sure
@@ -289,8 +428,7 @@ static int allocate_chunks(mrp_hashtbl_t *t, uint32_t nentry)
     }
 
     t->nlast = last;
-
-    mrp_debug("resized by %u full chunks + %u last entries", full, last);
+#endif
 
     return 0;
 }
@@ -423,6 +561,9 @@ static inline hash_entry_t *cookie_entry(mrp_hashtbl_t *t, uint32_t cookie)
 
     e = t->chunks[cidx]->entries + eidx;
 
+    MRP_ASSERT(e->cookie == cookie || e->cookie == MRP_HASH_COOKIE_NONE,
+               "entry %p with bad cookie (%u != %u)", e, e->cookie, cookie);
+
     mrp_debug("cookie 0x%x <%u.%u> => entry %p", cookie, cidx, eidx, e);
 
     return e;
@@ -435,23 +576,17 @@ static inline hash_entry_t *hash_entry(mrp_hashtbl_t *t, const void *key,
     hash_bucket_t   *b;
     hash_entry_t    *e;
     mrp_list_hook_t *p, *n;
-    uint32_t         h;
     int              diff;
 
-    h = t->hash(key);
     if (bptr != NULL && *bptr != NULL)
         b = *bptr;
     else {
-        b = hash_bucket(t, h);
+        b = hash_bucket(t, t->hash(key));
         if (bptr != NULL)
             *bptr = b;
+        if (b == NULL)
+            goto not_found;
     }
-
-    if (b == NULL)
-        goto not_found;
-
-    if (bptr != NULL)
-        *bptr = b;
 
     mrp_list_foreach(&b->entries, p, n) {
         e = mrp_list_entry(p, typeof(*e), hook);
@@ -475,6 +610,34 @@ static inline hash_entry_t *hash_entry(mrp_hashtbl_t *t, const void *key,
 }
 
 
+static inline void mark_entry(mrp_hashtbl_t *t, hash_entry_t *e, int used)
+{
+    hash_chunk_t *c = entry_chunk(e);
+    int           i = e - c->entries;
+
+    if (used) {
+        int clear, max;
+
+        chunk_mask_set(t, c, i);
+
+        max   = (int)(c->idx <= t->nchunk - 1 ? t->nperchunk : t->nlast);
+        clear = mrp_mask_next_clear(chunk_mask(t, c), 0);
+
+        if (clear < 0 || clear > max) {
+            mrp_debug("chunk #%d full, unlinking from space list", c->idx);
+            mrp_list_delete(&c->hook);
+        }
+    }
+
+    else {
+        chunk_mask_clear(t, c, i);
+
+        if (mrp_list_empty(&c->hook))
+            mrp_list_append(&t->space, &c->hook);
+    }
+}
+
+
 static inline hash_entry_t *alloc_entry(mrp_hashtbl_t *t)
 {
     hash_chunk_t    *c;
@@ -484,8 +647,7 @@ static inline hash_entry_t *alloc_entry(mrp_hashtbl_t *t)
 
     mrp_list_foreach(&t->space, p, n) {
         c = mrp_list_entry(p, typeof(*c), hook);
-        m = chunk_mask(c, c->idx == t->nchunk - 1 && t->nlast ?
-                       t->nlast : t->nperchunk);
+        m = chunk_mask(t, c);
         i = mrp_mask_alloc(m);
 
         if ((i < 0 || i >= (int)t->nperchunk) ||
@@ -505,7 +667,6 @@ static inline hash_entry_t *alloc_entry(mrp_hashtbl_t *t)
 static inline void free_entry(mrp_hashtbl_t *t, hash_entry_t *e, bool release)
 {
     hash_chunk_t *c;
-    mrp_mask_t   *m;
     uint32_t      i;
 
     if (release && t->free)
@@ -517,14 +678,32 @@ static inline void free_entry(mrp_hashtbl_t *t, hash_entry_t *e, bool release)
     mrp_list_delete(&e->hook);
 
     c = entry_chunk(e);
-    m = chunk_mask(c, c->idx == t->nchunk - 1 && t->nlast ?
-                   t->nlast : t->nperchunk);
     i = e - c->entries;
-
-    mrp_mask_clear(m, i);
+    chunk_mask_clear(t, c, i);
 
     if (mrp_list_empty(&c->hook))
         mrp_list_append(&t->space, &c->hook);
+}
+
+
+static inline int populate_entry(mrp_hashtbl_t *t, hash_entry_t *e,
+                                 const void *key, void *obj, uint32_t cookie)
+{
+    hash_bucket_t *b = hash_bucket(t, t->hash(key));
+
+    if (b == NULL)
+        return -1;
+
+    e->cookie = cookie;
+    e->key    = key;
+    e->object = obj;
+
+    mrp_list_append(&b->entries, &e->hook);
+
+    if (mrp_list_empty(&b->hook))
+        mrp_list_append(&t->used, &b->hook);
+
+    return 0;
 }
 
 
@@ -571,9 +750,8 @@ void mrp_hashtbl_destroy(mrp_hashtbl_t *t, bool release)
 int mrp_hashtbl_add(mrp_hashtbl_t *t, const void *key, void *obj,
                     uint32_t *cookiep)
 {
-    hash_entry_t  *e;
-    hash_bucket_t *b;
-    uint32_t       cookie, n;
+    hash_entry_t *e;
+    uint32_t      cookie, n;
 
     if (t == NULL) {
         errno = EINVAL;
@@ -592,6 +770,8 @@ int mrp_hashtbl_add(mrp_hashtbl_t *t, const void *key, void *obj,
 
         if (e == NULL)
             return -1;
+
+        mark_entry(t, e, 1);
     }
     else {
         if (t->nalloc <= t->nentry) {
@@ -615,17 +795,8 @@ int mrp_hashtbl_add(mrp_hashtbl_t *t, const void *key, void *obj,
         cookie = entry_cookie(t, e);
     }
 
-    e->cookie = cookie;
-    e->key    = key;
-    e->object = obj;
-
-    if ((b = hash_bucket(t, t->hash(key))) == NULL)
+    if (populate_entry(t, e, key, obj, cookie) < 0)
         return -1;
-
-    mrp_list_append(&b->entries, &e->hook);
-
-    if (mrp_list_empty(&b->hook))
-        mrp_list_append(&t->used, &b->hook);
 
     t->nentry++;
 
@@ -649,21 +820,22 @@ void *mrp_hashtbl_del(mrp_hashtbl_t *t, const void *key, uint32_t cookie,
         return NULL;
     }
 
+    if (cookie != MRP_HASH_COOKIE_NONE) {
+        e = cookie_entry(t, cookie);
+
+        if (e == NULL || e->cookie == MRP_HASH_COOKIE_NONE)
+            return NULL;
+    }
+    else
+        e = NULL;
+
     b = hash_bucket(t, t->hash(key));
 
     if (b == NULL)
         return NULL;
 
-    if (cookie != MRP_HASH_COOKIE_NONE){
-        e = cookie_entry(t, cookie);
-
-        if (e == NULL || e->cookie != cookie)
-            goto find_by_key;
-    }
-    else {
-    find_by_key:
+    if (e == NULL)
         e = hash_entry(t, key, cookie, &b);
-    }
 
     if (e == NULL) {
         errno = ENOENT;
@@ -698,7 +870,20 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
 
     if (t == NULL) {
         errno = EINVAL;
-        return  NULL;
+        return NULL;
+    }
+
+    if (cookie != MRP_HASH_COOKIE_NONE) {
+        e = cookie_entry(t, cookie);
+
+        if (e == NULL || e->cookie == MRP_HASH_COOKIE_NONE)
+            return NULL;
+
+        if (key == MRP_HASH_KEY_NONE)
+            return (void *)e->object;
+
+        if (t->comp(key, e->key))
+            return NULL;
     }
 
     b = hash_bucket(t, t->hash(key));
@@ -706,61 +891,46 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
     if (b == NULL)
         return NULL;
 
-    if (cookie != MRP_HASH_COOKIE_NONE) {
-        e = cookie_entry(t, cookie);
-
-        if (e == NULL || e->cookie != cookie || t->comp(key, e->key))
-            goto find_by_key;
-    }
-    else {
-    find_by_key:
-        e = hash_entry(t, key, cookie, &b);
-    }
+    e = hash_entry(t, key, cookie, &b);
 
     if (e == NULL)
-        return NULL;
-
-    if (cookie != MRP_HASH_COOKIE_NONE && e->cookie != cookie)
         return NULL;
 
     return (void *)e->object;
 }
 
 
-void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t cookie,
+void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t *cookiep,
                           void *obj, bool release)
 {
     hash_bucket_t *b;
     hash_entry_t  *e;
     void          *old;
     int            dir;
+    uint32_t       cookie;
 
     if (t == NULL) {
         errno = EINVAL;
-        return  NULL;
-    }
-
-    b = hash_bucket(t, t->hash(key));
-
-    if (b == NULL) {
-    add:
-        mrp_hashtbl_add(t, key, obj, &cookie);
         return NULL;
     }
+
+    cookie = cookiep != NULL ? *cookiep : MRP_HASH_COOKIE_NONE;
 
     if (cookie != MRP_HASH_COOKIE_NONE) {
         e = cookie_entry(t, cookie);
 
-        if (e == NULL || e->cookie != cookie)
-            goto find_by_key;
+        if (e != NULL && e->cookie == MRP_HASH_COOKIE_NONE)
+            e = NULL;
     }
     else {
-    find_by_key:
+        b = NULL;
         e = hash_entry(t, key, cookie, &b);
     }
 
-    if (e == NULL)
-        goto add;
+    if (e == NULL) {
+        mrp_hashtbl_add(t, key, obj, cookiep);
+        return NULL;
+    }
 
     if (t->it.e && t->it.e == &e->hook) {
         if (!_mrp_hashtbl_iter(t, (mrp_hashtbl_iter_t *)&t->it, dir = -t->it.d,
@@ -774,7 +944,7 @@ void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t cookie,
     old = (void *)e->object;
 
     if (t->free && release)
-        t->free((void *)e->key, (void *)e->object);
+        t->free(e->key != key ? (void *)e->key : NULL, (void *)e->object);
 
     e->key    = key;
     e->object = obj;

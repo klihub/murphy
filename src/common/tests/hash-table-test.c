@@ -102,6 +102,8 @@ enum {
 #define PATTERN_BIT(pattern, idx)                       \
     (pattern & (1 << ((idx) & ((sizeof(pattern) * 8) - 1))))
 
+unsigned int hash_func(const void *key);
+
 typedef struct {
     char            *str1;
     int              int1;
@@ -281,9 +283,9 @@ evict(void)
 void
 readd(void)
 {
-    entry_t *entry, *found;
-    char    *key;
-    int      i;
+    entry_t  *entry, *found;
+    char     *key;
+    int       i;
 
     INFO("re-adding...");
 
@@ -295,7 +297,8 @@ readd(void)
             if (found != NULL)
                 FATAL("unexpected entry to re-add '%s' found (%p)", key, found);
 
-            if (mrp_hashtbl_add(test.ht, key, entry, &entry->cookie) < 0)
+            if (mrp_hashtbl_add(test.ht, MRP_HASH_GET(key, h),
+                                entry, &entry->cookie) < 0)
                 FATAL("failed to re-add entry '%s'", key);
 
             INFO("re-added entry '%s'", key);
@@ -539,8 +542,12 @@ main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-d")) {
             mrp_debug_enable(true);
-            mrp_debug_set("@hash-table.c");
-            mrp_debug_set("@mask.h");
+            if (i < argc - 1 && *argv[i + 1] != '-')
+                mrp_debug_set(argv[++i]);
+            else {
+                mrp_debug_set("@hash-table.c");
+                mrp_debug_set("@mask.h");
+            }
         }
         else if (!strcmp(argv[i], "-v"))
             test.verbosity++;

@@ -118,6 +118,11 @@ typedef struct {
 #define MRP_HASH_COOKIE_NONE ((uint32_t)0)
 
 /**
+ * @brief Macro to mark a non-given key (for cookie-only based retrieval).
+ */
+#define MRP_HASH_KEY_NONE NULL
+
+/**
  * @brief User-specified configuration for a hash table.
  *
  * Use this structure to specify the user-configurable settings for a hash
@@ -168,6 +173,88 @@ void mrp_hashtbl_destroy(mrp_hashtbl_t *htbl, bool release);
  * @param [in] release  whether to free hashed entries in the table
  */
 void mrp_hashtbl_reset(mrp_hashtbl_t *htbl, bool release);
+
+/**
+ * @brief Also retrieve the calculated hash function for a key.
+ *
+ * When adding, deleting, replacing, or looking up a key, in addition to
+ * performing the normal operation also retrieve the full hash value calculated
+ * internally by the hash table. Once the hash table operation has returned,
+ * you can use the @MRP_HASH_VAL which will evaluate to the calculated hash
+ * value. Here's a simple example of you to use these macros:
+ *
+ * void *h, *obj;
+ * const char *key;
+ * uint32_t    hash;
+ *
+ * key = "my key of interest";
+ * obj = mrp_hashtbl_lookup(htbl, MRP_HASH_GET(key, h), MRP_HASH_COOKIE_NONE);
+ *
+ * if (obj == NULL)
+ *     fail("hash-table lookup failed for key '%s'", key);
+ *
+ * hash = MRP_HASH_VAL(h);
+ *
+ * Note that the macro internally uses the lowest bit of _key to mark it as
+ * as a dual-use pointer for passing in the real key and retrieveing the hash
+ * value. In practice this means that you cannot use this macro if your keys
+ * can have their lowest bit set. Normally this is not be a problem, though.
+ * If your keys are pointers (eg. strings), they will be aligned to 4, 8, or
+ * 16 bytes on practically all modern platforms. If your keys are integers,
+ * you probably use them as such as hash keys (IOW you set up the hash table
+ * with mrp_direct_hash as the hash function), in which you don't need to
+ * retrieve the hash value for a key as you already know it.
+ *
+ * Keep this in mind however and make sure your keys don't have their lowest
+ * bit set if you intend to use this method of hash retrieval.
+ *
+ * @param[in] _key  key to retrieve hash of
+ * @param[in] _h    void pointer, will be cast to (void *)(ptrdiff_t)<hash>
+ *
+ * @return Evaluates to (const void *)((const char *)&_h) + 1, should be
+ *         passed as the key argument to the hash table operation.
+ */
+#if 0
+#define MRP_HASH_GET(_key, _h) ({                                            \
+            MRP_ASSERT(!(((ptrdiff_t)_key) & 0x1),                           \
+                       "key (%s) in MRP_KEY_HASH has lowest bit set", _key); \
+            _h = (uint32_t *)_key;                                           \
+            (const void *)(((char *)&_h) + 1);                               \
+        })
+#else
+#define MRP_HASH_GET(_key, _h) _key
+#endif
+
+/**
+ * @brief Evaluate to the hash value retrieved using @MRP_HASH_GET.
+ *
+ * See @MRP_HASH_GET for an example on how to use this macro.
+ *
+ * @param [in] _h  same hash value pointer buffer as passed to @MRP_HASH_GET.
+ *
+ * @return Evaluates to the hash value for @_key passed to @MRP_HASH_GET.
+ */
+#define MRP_HASH_VAL(_h)  (uint32_t)((ptrdiff_t)_h)
+
+/**
+ * @brief Macro to retrieve a real key passed via @MRP_HASH_GET.
+ *
+ * This macro is used internally by the hash-table implementation.
+ */
+#if 0
+#define MRP_HASH_KEY(_key, _hp) ({                      \
+            if ((ptrdiff_t)(_key) & 0x1) {              \
+                _hp = (void *)((ptrdiff_t)key & ~0x1);  \
+                _key = *(void **)_hp;                   \
+            }                                           \
+            else                                        \
+                _hp = NULL;                             \
+                                                        \
+            _hp;                                        \
+        })
+#else
+#define MRP_HASH_KEY(_key, _hp) 0
+#endif
 
 /**
  * @brief Add a new entry to a hash table.
@@ -243,15 +330,30 @@ void *mrp_hashtbl_del(mrp_hashtbl_t *htbl, const void *key, uint32_t cookie,
 void *mrp_hashtbl_lookup(mrp_hashtbl_t *htbl, const void *key, uint32_t cookie);
 
 /**
+ * @brief Fetch an entry based on a cookie only.
+ *
+ * Look up the hash table entry corresponding to the given cookie.
+ *
+ *
+ * @param [in] htbl    hash table to fetch entry from
+ * @param [in] cookie  cookie to fetch entry for
+ *
+ * @return Returns the hash table entry for @cookie or @NULL if not entry
+ *         was found.
+ */
+#define mrp_hashtbl_fetch(_htbl, _cookie)                       \
+    mrp_hashtbl_lookup(_htbl, MRP_HASH_KEY_NONE, _cookie)
+
+/**
  * @brief Replace a hash table entry with a new one.
  *
  * Replace the hash table entry for the given @key with the given @object.
  *
- * @param [in] htbl     hash table to replace entry in
- * @param [in] key      key for the entry to replce
- * @param [in] cookie   cookie for the entry to replace or @MRP_HASH_COOKIE_NONE
- * @param [in] object   new object to replace the old one
- * @param [in] release  whether to free the old entry
+ * @param [in]     htbl     hash table to replace entry in
+ * @param [in]     key      key for the entry to replce
+ * @param [in,out] cookie   cookie for the entry
+ * @param [in]     object   new object to replace the old one
+ * @param [in]     release  whether to free the old entry
  *
  * @return Returns the old entry found in the table, or @NULL if no old entry
  *         was found in which case @errno is set to @ENOENT and the operation
@@ -265,7 +367,7 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *htbl, const void *key, uint32_t cookie);
  *         object so the hash table will correctly update the corresponding
  *         entry accordingly.
  */
-void *mrp_hashtbl_replace(mrp_hashtbl_t *htbl, void *key, uint32_t cookie,
+void *mrp_hashtbl_replace(mrp_hashtbl_t *htbl, void *key, uint32_t *cookie,
                           void *object, bool release);
 
 /**
