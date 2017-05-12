@@ -539,8 +539,12 @@ main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-d")) {
             mrp_debug_enable(true);
-            mrp_debug_set("@hash-table.c");
-            mrp_debug_set("@mask.h");
+            if (i < argc - 1 && *argv[i + 1] != '-')
+                mrp_debug_set(argv[++i]);
+            else {
+                mrp_debug_set("@hash-table.c");
+                mrp_debug_set("@mask.h");
+            }
         }
         else if (!strcmp(argv[i], "-v"))
             test.verbosity++;
