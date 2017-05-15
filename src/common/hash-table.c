@@ -36,15 +36,16 @@
 #include <murphy/common/hash-table.h>
 
 /*
- * We used inlined allocation bitmasks if this is defined. Inlined masks will
+ * We use inlined allocation bitmasks if this is defined. Inlined masks can
  * save memory by putting the chunk allocation mask into the leftover memory
  * area after the last full-sized entry in the chunk.
  */
 #define __INLINED_MASKS__
 
 /* Note:
- * Technically CHUNKSIZE could be a per-table setting. It is always used
- * in a context where the table is also known.
+ * Technically CHUNKSIZE and {MIN,MAX}_BUCKETS could all be per-instance
+ * table settings. They are always used from a context where the table
+ * instance is also known.
  */
 
 #define MIN_BUCKETS   16                 /* use at least this many buckets */
@@ -115,8 +116,8 @@ static int calculate_sizes(mrp_hashtbl_t *t)
     int nent, chnk, mask, room;
 
     /*
-     * When inline masks are enabled we keep the chunk allocation bitmask
-     * including the bitmask bits in the chunk itself after the last hash
+     * When inline masks are enabled we keep the chunk allocation bitmask,
+     * including the bitmask bits, in the chunk itself after the last hash
      * entry. We need then to calculate nperchunk (the number of entries
      * that fit into a chunk) so that there is enough room spared at the
      * end for a bitmask of nperchunk bits. We do this with a brute-force
@@ -125,7 +126,11 @@ static int calculate_sizes(mrp_hashtbl_t *t)
      *   2) see if the last entry in the mask fits in CHUNKSIZE
      *   3) if not, reduce the usable size by the bitmask necessary for
      *      the unadjusted nperchunk entries and recalculate nperchunk.
-     *   4) Make a final verification that now we fit into CHUNKSIZE.
+     *   4) adjust if we can squeeze in more entries (the #if 1'd loop
+     *      below, I have never seen it being able to squeeze in even a
+     *      singe entry with any CHUNKSIZE 64 - 4K, so maybe I just miss
+     *      why it cannot happen even in theory)
+     *   5) Make a final verification that now we fit into CHUNKSIZE.
      */
 
     nent = (CHUNKSIZE - sizeof(hash_chunk_t)) / sizeof(hash_entry_t);
