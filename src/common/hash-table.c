@@ -458,9 +458,6 @@ static inline hash_entry_t *hash_entry(mrp_hashtbl_t *t, const void *key,
     if (b == NULL)
         goto not_found;
 
-    if (bptr != NULL)
-        *bptr = b;
-
     mrp_list_foreach(&b->entries, p, n) {
         e = mrp_list_entry(p, typeof(*e), hook);
 
