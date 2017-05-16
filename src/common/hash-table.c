@@ -578,7 +578,7 @@ int mrp_hashtbl_add(mrp_hashtbl_t *t, const void *key, void *obj,
 {
     hash_entry_t  *e;
     hash_bucket_t *b;
-    uint32_t       cookie, n;
+    uint32_t       cookie, n, *hp;
 
     if (t == NULL) {
         errno = EINVAL;
@@ -620,6 +620,14 @@ int mrp_hashtbl_add(mrp_hashtbl_t *t, const void *key, void *obj,
         cookie = entry_cookie(t, e);
     }
 
+    if (MRP_HASH_KEY(key, hp))
+        b = hash_bucket(t, *hp = t->hash(key));
+    else
+        b = hash_bucket(t, t->hash(key));
+
+    if (b == NULL)
+        return -1;
+
     e->cookie = cookie;
     e->key    = key;
     e->object = obj;
@@ -648,13 +656,17 @@ void *mrp_hashtbl_del(mrp_hashtbl_t *t, const void *key, uint32_t cookie,
     hash_entry_t  *e;
     void          *obj;
     int            dir;
+    uint32_t      *hp;
 
     if (t == NULL) {
         errno = EINVAL;
         return NULL;
     }
 
-    b = hash_bucket(t, t->hash(key));
+    if (MRP_HASH_KEY(key, hp))
+        b = hash_bucket(t, *hp = t->hash(key));
+    else
+        b = hash_bucket(t, t->hash(key));
 
     if (b == NULL)
         return NULL;
@@ -700,13 +712,17 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
 {
     hash_bucket_t *b;
     hash_entry_t  *e;
+    uint32_t      *hp;
 
     if (t == NULL) {
         errno = EINVAL;
         return  NULL;
     }
 
-    b = hash_bucket(t, t->hash(key));
+    if (MRP_HASH_KEY(key, hp))
+        b = hash_bucket(t, *hp = t->hash(key));
+    else
+        b = hash_bucket(t, t->hash(key));
 
     if (b == NULL)
         return NULL;
@@ -739,13 +755,17 @@ void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t cookie,
     hash_entry_t  *e;
     void          *old;
     int            dir;
+    uint32_t      *hp;
 
     if (t == NULL) {
         errno = EINVAL;
         return  NULL;
     }
 
-    b = hash_bucket(t, t->hash(key));
+    if (MRP_HASH_KEY(key, hp))
+        b = hash_bucket(t, *hp = t->hash(key));
+    else
+        b = hash_bucket(t, t->hash(key));
 
     if (b == NULL) {
     add:

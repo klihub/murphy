@@ -102,6 +102,8 @@ enum {
 #define PATTERN_BIT(pattern, idx)                       \
     (pattern & (1 << ((idx) & ((sizeof(pattern) * 8) - 1))))
 
+unsigned int hash_func(const void *key);
+
 typedef struct {
     char            *str1;
     int              int1;
@@ -139,6 +141,7 @@ populate(void)
     entry_t  *entry;
     char     *key;
     int       i;
+    uint32_t *h;
 
     INFO("populating with %s-generated cookies...",
          test.cookies ? (test.run & 0x1 ? "user" : "reversed user") : "table");
@@ -151,10 +154,18 @@ populate(void)
         else
             entry->cookie = 0;
 
-        if (mrp_hashtbl_add(test.ht, key, entry, &entry->cookie) < 0)
+        if (mrp_hashtbl_add(test.ht, MRP_HASH_GET(key, h),
+                            entry, &entry->cookie) < 0)
             FATAL("failed to hash in entry '%s'", key);
         else
             INFO("hashed in entry '%s'", key);
+
+        if (MRP_HASH_VAL(h) != hash_func(key))
+            FATAL("retrieved hash value mismatch (%u != %u) for key '%s'",
+                  MRP_HASH_VAL(h), hash_func(key), key);
+            else
+                mrp_debug("retrieved hash value (%u) ok for key '%s'",
+                          MRP_HASH_VAL(h), key);
     }
 
     INFO("done.");
@@ -281,22 +292,38 @@ evict(void)
 void
 readd(void)
 {
-    entry_t *entry, *found;
-    char    *key;
-    int      i;
+    entry_t  *entry, *found;
+    char     *key;
+    int       i;
+    uint32_t *h;
 
     INFO("re-adding...");
 
     for (i = 0, entry = test.entries; i < test.nentry; i++, entry++) {
         if (PATTERN_BIT(test.pattern, i)) {
             key   = ENTRY_KEY(entry, test.keyidx);
-            found = mrp_hashtbl_lookup(test.ht, key, 0);
+            found = mrp_hashtbl_lookup(test.ht, MRP_HASH_GET(key, h), 0);
 
             if (found != NULL)
                 FATAL("unexpected entry to re-add '%s' found (%p)", key, found);
 
-            if (mrp_hashtbl_add(test.ht, key, entry, &entry->cookie) < 0)
+            if (MRP_HASH_VAL(h) != hash_func(key))
+                FATAL("retrieved hash value mismatch (%u != %u) for key '%s'",
+                      MRP_HASH_VAL(h), hash_func(key), key);
+            else
+                mrp_debug("retrieved hash value (%u) ok for key '%s'",
+                          MRP_HASH_VAL(h), key);
+
+            if (mrp_hashtbl_add(test.ht, MRP_HASH_GET(key, h),
+                                entry, &entry->cookie) < 0)
                 FATAL("failed to re-add entry '%s'", key);
+
+            if (MRP_HASH_VAL(h) != hash_func(key))
+                FATAL("retrieved hash value mismatch (%u != %u) for key '%s'",
+                      MRP_HASH_VAL(h), hash_func(key), key);
+            else
+                mrp_debug("retrieved hash value (%u) ok for key '%s'",
+                          MRP_HASH_VAL(h), key);
 
             INFO("re-added entry '%s'", key);
         }
@@ -311,13 +338,14 @@ check(void)
 {
     entry_t *entry, *found, *byc, *wrc;
     char    *key;
+    void    *h;
     int      i;
 
     INFO("checking...");
 
     for (i = 0, entry = test.entries; i < test.nentry; i++, entry++) {
         key   = ENTRY_KEY(entry, test.keyidx);
-        found = mrp_hashtbl_lookup(test.ht, key, 0);
+        found = mrp_hashtbl_lookup(test.ht, MRP_HASH_GET(key, h), 0);
         byc   = mrp_hashtbl_lookup(test.ht, key, entry->cookie);
         wrc   = mrp_hashtbl_lookup(test.ht, key, entry->cookie + 5);
         if (!PATTERN_BIT(test.pattern, i)) {
@@ -330,6 +358,13 @@ check(void)
             if (wrc != NULL)
                 FATAL("unexpected entry by wrong cookie '%s' (%p) found",
                       key, entry);
+
+            if (MRP_HASH_VAL(h) != hash_func(key))
+                FATAL("retrieved hash value mismatch (%u != %u) for key '%s'",
+                      MRP_HASH_VAL(h), hash_func(key), key);
+            else
+                mrp_debug("retrieved hash value (%u) ok for key '%s'",
+                          MRP_HASH_VAL(h), key);
         }
         else {
             if (found != NULL)
