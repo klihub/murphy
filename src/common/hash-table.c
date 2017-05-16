@@ -428,6 +428,9 @@ static inline hash_entry_t *cookie_entry(mrp_hashtbl_t *t, uint32_t cookie)
 
     e = t->chunks[cidx]->entries + eidx;
 
+    MRP_ASSERT(!e->cookie || e->cookie == cookie,
+               "entry %p with badk cookie (%u != %u)", e, e->cookie, cookie);
+
     mrp_debug("cookie 0x%x <%u.%u> => entry %p", cookie, cidx, eidx, e);
 
     return e;
@@ -663,6 +666,15 @@ void *mrp_hashtbl_del(mrp_hashtbl_t *t, const void *key, uint32_t cookie,
         return NULL;
     }
 
+    if (cookie != MRP_HASH_COOKIE_NONE) {
+        e = cookie_entry(t, cookie);
+
+        if (e == NULL || !e->cookie || key == MRP_HASH_KEY_NONE)
+            return NULL;
+    }
+    else
+        e = NULL;
+
     if (MRP_HASH_KEY(key, hp))
         b = hash_bucket(t, *hp = t->hash(key));
     else
@@ -671,16 +683,8 @@ void *mrp_hashtbl_del(mrp_hashtbl_t *t, const void *key, uint32_t cookie,
     if (b == NULL)
         return NULL;
 
-    if (cookie != MRP_HASH_COOKIE_NONE){
-        e = cookie_entry(t, cookie);
-
-        if (e == NULL || e->cookie != cookie)
-            goto find_by_key;
-    }
-    else {
-    find_by_key:
+    if (e == NULL)
         e = hash_entry(t, key, cookie, &b);
-    }
 
     if (e == NULL) {
         errno = ENOENT;
@@ -719,6 +723,19 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
         return  NULL;
     }
 
+    if (cookie != MRP_HASH_COOKIE_NONE) {
+        e = cookie_entry(t, cookie);
+
+        if (e == NULL || !e->cookie)
+            return NULL;
+
+        if (key == MRP_HASH_KEY_NONE)
+            return NULL;
+
+        if (t->comp(key, e->key))
+            return NULL;
+    }
+
     if (MRP_HASH_KEY(key, hp))
         b = hash_bucket(t, *hp = t->hash(key));
     else
@@ -727,40 +744,42 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
     if (b == NULL)
         return NULL;
 
-    if (cookie != MRP_HASH_COOKIE_NONE) {
-        e = cookie_entry(t, cookie);
-
-        if (e == NULL || e->cookie != cookie || t->comp(key, e->key))
-            goto find_by_key;
-    }
-    else {
-    find_by_key:
-        e = hash_entry(t, key, cookie, &b);
-    }
+    e = hash_entry(t, key, cookie, &b);
 
     if (e == NULL)
-        return NULL;
-
-    if (cookie != MRP_HASH_COOKIE_NONE && e->cookie != cookie)
         return NULL;
 
     return (void *)e->object;
 }
 
 
-void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t cookie,
+void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t *cookiep,
                           void *obj, bool release)
 {
     hash_bucket_t *b;
     hash_entry_t  *e;
     void          *old;
     int            dir;
-    uint32_t      *hp;
+    uint32_t       cookie, *hp;
 
     if (t == NULL) {
         errno = EINVAL;
         return  NULL;
     }
+
+    cookie = cookiep != NULL ? *cookiep : MRP_HASH_COOKIE_NONE;
+
+    if (cookie != MRP_HASH_COOKIE_NONE) {
+        e = cookie_entry(t, cookie);
+
+        if (e == NULL)
+            return NULL;
+
+        if (!e->cookie)
+            goto add;
+    }
+    else
+        e = NULL;
 
     if (MRP_HASH_KEY(key, hp))
         b = hash_bucket(t, *hp = t->hash(key));
@@ -769,20 +788,12 @@ void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t cookie,
 
     if (b == NULL) {
     add:
-        mrp_hashtbl_add(t, key, obj, &cookie);
+        mrp_hashtbl_add(t, key, obj, cookiep);
         return NULL;
     }
 
-    if (cookie != MRP_HASH_COOKIE_NONE) {
-        e = cookie_entry(t, cookie);
-
-        if (e == NULL || e->cookie != cookie)
-            goto find_by_key;
-    }
-    else {
-    find_by_key:
+    if (e == NULL)
         e = hash_entry(t, key, cookie, &b);
-    }
 
     if (e == NULL)
         goto add;
