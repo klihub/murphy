@@ -717,7 +717,7 @@ void *mrp_hashtbl_lookup(mrp_hashtbl_t *t, const void *key, uint32_t cookie)
 
     if (t == NULL) {
         errno = EINVAL;
-        return  NULL;
+        return NULL;
     }
 
     if (cookie != MRP_HASH_COOKIE_NONE) {
@@ -761,7 +761,7 @@ void *mrp_hashtbl_replace(mrp_hashtbl_t *t, void *key, uint32_t *cookiep,
 
     if (t == NULL) {
         errno = EINVAL;
-        return  NULL;
+        return NULL;
     }
 
     cookie = cookiep != NULL ? *cookiep : MRP_HASH_COOKIE_NONE;
