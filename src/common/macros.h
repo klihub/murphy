@@ -95,6 +95,16 @@
 #    define MRP_EXIT __attribute__ ((destructor(65535)))
 #    define MRP_EXIT_AT(prio) __attribute__ ((destructor(prio)))
 
+#    /** Compile-time check if the given types are compatible. */
+#    define MRP_COMPATIBLE(t1, t2) __builtin_types_compatible_p(t1, t2)
+
+#    /** Compile-time check if the given expression is a constant. */
+#    define MRP_CONSTANT(expr) __builtin_constant_p(expr)
+
+     /** Evaluate code depending on the value of a constant expression. */
+#    define MRP_CHOOSE(const_expr, expr1, expr2)        \
+        __builtin_choose_expr(const_expr, expr1, expr2)
+
 /** Mark a variable unused. */
 #    define MRP_UNUSED(var) (void)var
 #else /* ! __GNUC__ */
@@ -110,6 +120,9 @@
 #    define MRP_EXIT
 #    define MRP_EXIT_AT
 #    define MRP_UNUSED(var)
+#    define MRP_COMPATIBLE(t1, t2) ((void)0)
+#    define MRP_CONSTANT(t1, t2) 0
+#    define MRP_CHOOSE(const_expr, expr1, expr2) ((void)0)
 #endif
 
 /** Macro that can be used to pass the location of its usage. */
