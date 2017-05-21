@@ -41,24 +41,34 @@
 
 int main(int argc, char *argv[])
 {
-    mrp_cson_t *s, *i, *b, *d, *o;
-    mrp_cson_print_t style;
+    mrp_cson_t *s, *i, *b, *d, *o, *v, *a;
     void *test;
     int8_t i8;
     int16_t i16;
+#if 0
     int32_t i32;
     int64_t i64;
+#endif
     mrp_cson_t *co;
-    ptrdiff_t v;
     char **str;
     char *strings[] = {
         "string", "another one", "a test string",
         "foo", "foobar", "the quick brown frox jumps over the lazy dog",
         NULL
     };
+    int arg;
 
-    MRP_UNUSED(argc);
-    MRP_UNUSED(argv);
+    if (argc > 1 && (!strcmp(argv[1], "-d") || !strcmp(argv[1], "--debug"))) {
+        mrp_debug_enable(true);
+        if (argc > 2) {
+            for (arg = 2; arg < argc; arg++)
+                mrp_debug_set(argv[arg]);
+        }
+        else
+            mrp_debug_set("*");
+    }
+
+    mrp_cson_set_default_mode(MRP_CSON_TYPE_COMPACT);
 
     test = mrp_allocz(8192);
     printf("test pointer: %p (0x%x)\n", test, (ptrdiff_t)test);
@@ -85,10 +95,10 @@ int main(int argc, char *argv[])
     printf("uint64_t: %lu - %lu\n", 0                , MRP_CSON_MAXUINT64);
 
     for (i8 = MRP_CSON_MININT8; i8 < MRP_CSON_MAXINT8; i8++) {
-        co = mrp_cson_compact(MRP_CSON_TYPE_INT8, i8);
+        co = mrp_cson_create(MRP_CSON_TYPE_INT8, i8);
         v  = mrp_cson_compact_value(co);
 
-        printf("int8_t %d: 0x%x (-0x%x), co: %p, v: 0x%x\n", i8, i8, -i8, co, v);
+        printf("int8_t %d: 0x%x (-0x%x), co: %p, v: %p\n", i8, i8, -i8, co, v);
 
         if (v != i8) {
             printf("int8_t broken...\n");
@@ -97,13 +107,13 @@ int main(int argc, char *argv[])
     }
 
     for (i16 = MRP_CSON_MININT16; i16 < MRP_CSON_MAXINT16; i16++) {
-        co = mrp_cson_compact(MRP_CSON_TYPE_INT16, i16);
+        co = mrp_cson_create(MRP_CSON_TYPE_INT16, i16);
         v  = mrp_cson_compact_value(co);
 
-        if (!(i16 % 1024) || v != i16)
-        printf("int16_t %d: 0x%x, co: %p, v: 0x%x\n", i16, i16, co, v);
+        if (!(i16 % 1024) || (ptrdiff_t)v != i16)
+        printf("int16_t %d: 0x%x, co: %p, v: %p\n", i16, i16, co, v);
 
-        if (v != i16) {
+        if ((ptrdiff_t)v != i16) {
             printf("int16_t broken...\n");
             exit(1);
         }
@@ -111,26 +121,27 @@ int main(int argc, char *argv[])
 
 #if 0
     for (i32 = MRP_CSON_MININT32; i32 < MRP_CSON_MAXINT32; i32++) {
-        co = mrp_cson_compact(MRP_CSON_TYPE_INT32, i32);
+        co = mrp_cson_create(MRP_CSON_TYPE_INT32, i32);
         v  = mrp_cson_compact_value(co);
 
-        if (!(i32 % (4 * 1024 * 1024)) || v != i32)
-            printf("int32_t %d: 0x%x, co: %p, v: 0x%x\n", i32, i32, co, v);
+        if (!(i32 % (4 * 1024 * 1024)) || (ptrdiff_t)v != i32)
+            printf("int32_t %d: 0x%x, co: %p, v: %p\n", i32, i32, co, v);
 
-        if (v != i32) {
+        if ((ptrdiff_t)v != i32) {
             printf("int32_t broken...\n");
             exit(1);
         }
     }
 
     for (i64 = MRP_CSON_MININT64; i64 < MRP_CSON_MAXINT64; i64++) {
-        co = mrp_cson_compact(MRP_CSON_TYPE_INT64, i64);
+        co = mrp_cson_create(MRP_CSON_TYPE_INT64, i64);
         v  = mrp_cson_compact_value(co);
 
-        if (!(i64 % (64 * 1024 * 1024)) || v != i64)
-            printf("int64_t %lld: 0x%llx, co: %p, v: 0x%llx\n", i64, i64, co, v);
+        if (!(i64 % (64 * 1024 * 1024)) || (ptrdiff_t)v != i64)
+            printf("int64_t %lld: 0x%llx, co: %p, v: 0x%llx\n",
+                   (unsigned long long)i64, (unsigned long long)i64, co, v);
 
-        if (v != i64) {
+        if ((ptrdiff_t)v != i64) {
             printf("int64_t broken...\n");
             exit(1);
         }
@@ -138,9 +149,9 @@ int main(int argc, char *argv[])
 #endif
 
     for (str = strings; *str; str++) {
-        co = mrp_cson_compact(MRP_CSON_TYPE_STRING, *str);
+        co = mrp_cson_create(MRP_CSON_TYPE_STRING, *str);
 
-        if (mrp_cson_compact_type(co) != MRP_CSON_TYPE_STRING) {
+        if (mrp_cson_get_type(co) != MRP_CSON_TYPE_STRING) {
             printf("string compact type mismatch\n");
             exit(1);
         }
@@ -160,16 +171,17 @@ int main(int argc, char *argv[])
     b = mrp_cson_create(MRP_CSON_BOOLEAN(true));
     d = mrp_cson_create(MRP_CSON_DOUBLE(3.141));
     o = mrp_cson_create(MRP_CSON_TYPE_OBJECT);
+    a = mrp_cson_create(MRP_CSON_TYPE_ARRAY);
 
     fprintf(stdout, "%p: %CSONp\n", s, s);
     fprintf(stdout, "%p: %CSONp\n", i, i);
     fprintf(stdout, "%p: %CSONp\n", b, b);
     fprintf(stdout, "%p: %CSONp\n", d, d);
 
-    fprintf(stdout, "%p: %#CSONp", s, s);
-    fprintf(stdout, "%p: %#CSONp", i, i);
-    fprintf(stdout, "%p: %#CSONp", b, b);
-    fprintf(stdout, "%p: %#CSONp", d, d);
+    fprintf(stdout, "%p: %#CSONp\n", s, s);
+    fprintf(stdout, "%p: %#CSONp\n", i, i);
+    fprintf(stdout, "%p: %#CSONp\n", b, b);
+    fprintf(stdout, "%p: %#CSONp\n", d, d);
 
     if (mrp_cson_set(o, "string" , s) < 0)
         printf("setting 'string' member failed\n");
@@ -179,6 +191,8 @@ int main(int argc, char *argv[])
         printf("setting 'boolean' member failed\n");
     if (mrp_cson_set(o, "double" , d) < 0)
         printf("setting 'double' member failed\n");
+    if (mrp_cson_set(o, "array" , a) < 0)
+        printf("setting 'array' member failed\n");
 
     if (mrp_cson_get(o, "string") != s)
         printf("getting 'string' member failed\n");
@@ -188,8 +202,11 @@ int main(int argc, char *argv[])
         printf("getting 'boolean' member failed\n");
     if (mrp_cson_get(o, "double") != d)
         printf("getting 'double' member failed\n");
+    if (mrp_cson_get(o, "array") != a)
+        printf("getting 'array' member failed\n");
 
-    fprintf(stdout, "%p: %#CSONp", o, o);
+    fprintf(stdout, "%p: pretty: %#CSONp\n", o, o);
+    fprintf(stdout, "%p: normal: %CSONp\n", o, o);
 
     mrp_cson_unref(s);
     mrp_cson_unref(i);
