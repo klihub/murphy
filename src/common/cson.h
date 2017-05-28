@@ -332,11 +332,112 @@ int mrp_cson_set(mrp_cson_t *o, const char *name, mrp_cson_t *v);
 mrp_cson_t *mrp_cson_get(mrp_cson_t *o, const char *name);
 
 /**
- * @brief Ddelete a JSON object member.
+ * @brief Delete a JSON object member.
  */
 int mrp_cson_del(mrp_cson_t *o, const char *name);
 
+
+
+/**
+ * @brief Type converting value getters.
+ *
+ * These functions get the value of the given JSON object, performing
+ * any necessary/possible type conversion.
+ */
+
+const char *mrp_cson_string_value(mrp_cson_t *o, char *buf, size_t size);
+int mrp_cson_integer_value(mrp_cson_t *o);
+int mrp_cson_boolean_value(mrp_cson_t *o);
+double mrp_cson_double_value(mrp_cson_t *o);
+int8_t mrp_cson_int8_value(mrp_cson_t *o);
+int16_t mrp_cson_int16_value(mrp_cson_t *o);
+int32_t mrp_cson_int32_value(mrp_cson_t *o);
+int64_t mrp_cson_int64_value(mrp_cson_t *o);
+uint8_t mrp_cson_uint8_value(mrp_cson_t *o);
+uint16_t mrp_cson_uint16_value(mrp_cson_t *o);
+uint32_t mrp_cson_uint32_value(mrp_cson_t *o);
+uint64_t mrp_cson_uint64_value(mrp_cson_t *o);
+
+
+
+
+
+
+
+
+/**
+ * @brief Simple (type-matching) object member getters.
+ *
+ * Object member getters that do not perform type conversion
+ * of any kind.
+ */
+
+const char *mrp_cson_get_string(mrp_cson_t *o, const char *name);
+int mrp_cson_get_boolean(mrp_cson_t *o, const char *name);
+int mrp_cson_get_integer(mrp_cson_t *o, const char *name);
+double mrp_cson_get_double(mrp_cson_t *o, const char *name);
+int8_t mrp_cson_get_int8(mrp_cson_t *o, const char *name);
+int16_t mrp_cson_get_int16(mrp_cson_t *o, const char *name);
+int32_t mrp_cson_get_int32(mrp_cson_t *o, const char *name);
+int64_t mrp_cson_get_int64(mrp_cson_t *o, const char *name);
+uint8_t mrp_cson_get_uint8(mrp_cson_t *o, const char *name);
+uint16_t mrp_cson_get_uint16(mrp_cson_t *o, const char *name);
+uint32_t mrp_cson_get_uint32(mrp_cson_t *o, const char *name);
+uint64_t mrp_cson_get_uint64(mrp_cson_t *o, const char *name);
+mrp_cson_t *mrp_cson_get_object(mrp_cson_t *o, const char *name);
+mrp_cson_t *mrp_cson_get_array(mrp_cson_t *o, const char *name);
+
+int mrp_cson_get_member(mrp_cson_t *o, const char *name, ...);
+
+/**
+ * @brief Type-converting object member getters.
+ */
+
+
+
+
+#if 0
+int mrp_cson_set_string(mrp_cson_t *o, const char *name, const char *str);
+const char *mrp_cson_get_string(mrp_cson_t *o, const char *name);
+
+int mrp_cson_set_boolean(mrp_cson_t *o, const char *name, int bln);
+int mrp_cson_get_boolean(mrp_cson_t *o, const char *name);
+
+int mrp_cson_set_integer(mrp_cson_t *o, const char *name, int i);
+int mrp_cson_get_integer(mrp_cson_t *o, const char *name);
+#endif
+
+
+
+
+
+#if 0
+const char *mrp_cson_string_value(mrp_cson_t *o);
+int mrp_cson_integer_value(mrp_cson_t *o);
+double mrp_cson_double_value(mrp_cson_t *o);
+#define mrp_cson_number_value mrp_cson_double_value
+int mrp_cson_boolean_value(mrp_cson_t *o);
+int8_t mrp_cson_int8_value(mrp_cson_t *o);
+uint8_t mrp_cson_uint8_value(mrp_cson_t *o);
+int16_t mrp_cson_int16_value(mrp_cson_t *o);
+uint16_t mrp_cson_uint16_value(mrp_cson_t *o);
+int32_t mrp_cson_int32_value(mrp_cson_t *o);
+uint32_t mrp_cson_uint32_value(mrp_cson_t *o);
+int64_t mrp_cson_int64_value(mrp_cson_t *o);
+uint64_t mrp_cson_uint64_value(mrp_cson_t *o);
+#endif
+
+
+
+
+
+/**
+ * @brief Get the value of a compact object.
+ *
+ * This function is available mostly for testing.
+ */
 ptrdiff_t mrp_cson_compact_value(mrp_cson_t *o);
+
 
 
 /**

@@ -29,7 +29,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <printf.h>
 
@@ -59,7 +61,8 @@ struct mrp_cson_s {
     mrp_refcnt_t    refcnt;                  /* reference count */
     union {                                  /* type-specific value */
         char     *str;                       /* _STRING */
-        int       i;                         /* _INTEGER */
+        int64_t   i;                         /* _INTEGER, _INT* */
+        uint64_t  u;                         /* _UINT* */
         double    dbl;                       /* _NUMBER, _DOUBLE */
 
         struct {                             /* _OBJECT */
@@ -72,16 +75,6 @@ struct mrp_cson_s {
             size_t       nitem;              /* number of array elements */
             mrp_cson_t **items;              /* array element values */
         } array;
-
-        /* non-standard JSON values */
-        int8_t    s8;                        /* _INT8 */
-        uint8_t   u8;                        /* _UINT8 */
-        int16_t   s16;                       /* _INT16 */
-        uint16_t  u16;                       /* _UINT16 */
-        int32_t   s32;                       /* _INT32 */
-        uint32_t  u32;                       /* _UINT32 */
-        int64_t   s64;                       /* _INT64 */
-        uint64_t  u64;                       /* _UINT64 */
     };
 };
 
@@ -276,7 +269,6 @@ int mrp_cson_set_default_mode(mrp_cson_type_t mode)
  * compact mode implementation
  */
 
-
 static inline int compactable_type(mrp_cson_type_t type)
 {
     switch (type) {
@@ -370,12 +362,6 @@ static inline ptrdiff_t compact_value(mrp_cson_t *obj)
         errno = EINVAL;
         return (ptrdiff_t)-1;
     }
-}
-
-
-ptrdiff_t mrp_cson_compact_value(mrp_cson_t *o)
-{
-    return compact_value(o);
 }
 
 
@@ -547,18 +533,13 @@ static int compact_print(char *buf, size_t size, mrp_cson_t *o)
     case MRP_CSON_TYPE_INT8:
     case MRP_CSON_TYPE_INT16:
     case MRP_CSON_TYPE_INT32:
-        l = snprintf(buf, size, "%d", (int)v);
+    case MRP_CSON_TYPE_INT64:
+        l = snprintf(buf, size, "%lld", (long long)v);
         break;
 
     case MRP_CSON_TYPE_UINT8:
     case MRP_CSON_TYPE_UINT16:
     case MRP_CSON_TYPE_UINT32:
-        l = snprintf(buf, size, "%u", (unsigned int)v);
-        break;
-
-    case MRP_CSON_TYPE_INT64:
-        l = snprintf(buf, size, "%lld", (long long)v);
-        break;
     case MRP_CSON_TYPE_UINT64:
         l = snprintf(buf, size, "%llu", (unsigned long long)v);
         break;
@@ -602,18 +583,13 @@ static int compact_print_pretty(char *buf, size_t size, mrp_cson_t *o, int lvl)
     case MRP_CSON_TYPE_INT8:
     case MRP_CSON_TYPE_INT16:
     case MRP_CSON_TYPE_INT32:
-        l = snprintf(buf, size, "%d", (int)v);
+    case MRP_CSON_TYPE_INT64:
+        l = snprintf(buf, size, "%lld", (long long)v);
         break;
 
     case MRP_CSON_TYPE_UINT8:
     case MRP_CSON_TYPE_UINT16:
     case MRP_CSON_TYPE_UINT32:
-        l = snprintf(buf, size, "%u", (unsigned int)v);
-        break;
-
-    case MRP_CSON_TYPE_INT64:
-        l = snprintf(buf, size, "%lld", (long long)v);
-        break;
     case MRP_CSON_TYPE_UINT64:
         l = snprintf(buf, size, "%llu", (unsigned long long)v);
         break;
@@ -625,6 +601,13 @@ static int compact_print_pretty(char *buf, size_t size, mrp_cson_t *o, int lvl)
 
     return l;
 }
+
+
+ptrdiff_t mrp_cson_compact_value(mrp_cson_t *o)
+{
+    return compact_value(o);
+}
+
 
 
 /*
@@ -666,31 +649,31 @@ static mrp_cson_t *shareable_createv(mrp_cson_type_t type, va_list *ap)
         break;
 
     case MRP_CSON_TYPE_INT8:
-        o->s8 = (int8_t)va_arg(*ap, int);
+        o->i = (int8_t)va_arg(*ap, int);
         break;
     case MRP_CSON_TYPE_UINT8:
-        o->u8 = (uint8_t)va_arg(*ap, unsigned int);
+        o->u = (uint8_t)va_arg(*ap, unsigned int);
         break;
 
     case MRP_CSON_TYPE_INT16:
-        o->s16 = (int16_t)va_arg(*ap, int);
+        o->i = (int16_t)va_arg(*ap, int);
         break;
     case MRP_CSON_TYPE_UINT16:
-        o->u16 = (uint16_t)va_arg(*ap, unsigned int);
+        o->u = (uint16_t)va_arg(*ap, unsigned int);
         break;
 
     case MRP_CSON_TYPE_INT32:
-        o->s32 = (int32_t)va_arg(*ap, int);
+        o->i = (int32_t)va_arg(*ap, int);
         break;
     case MRP_CSON_TYPE_UINT32:
-        o->u32 = (uint32_t)va_arg(*ap, unsigned int);
+        o->u = (uint32_t)va_arg(*ap, unsigned int);
         break;
 
     case MRP_CSON_TYPE_INT64:
-        o->s64 = (int64_t)va_arg(*ap, int64_t);
+        o->i = (int64_t)va_arg(*ap, int64_t);
         break;
     case MRP_CSON_TYPE_UINT64:
-        o->u64 = (uint64_t)va_arg(*ap, uint64_t);
+        o->u = (uint64_t)va_arg(*ap, uint64_t);
         break;
 
     case MRP_CSON_TYPE_DOUBLE:
@@ -877,20 +860,13 @@ static int shareable_set(mrp_cson_t *o, const char *name, mrp_cson_t *v)
 }
 
 
-static void shareable_del(mrp_cson_t *o, const char *name)
+static int shareable_del(mrp_cson_t *o, const char *name)
 {
     mrp_cson_member_t *m = shareable_get(o, name);
     cson_sym_t        *sym;
 
-    if (o == NULL)
-        goto invalid_type;
-
-    if (!shareable_object(o) || o->type != MRP_CSON_TYPE_OBJECT)
-        goto invalid_type;
-
     if ((m = shareable_get(o, name)) == NULL)
-        return;
-
+        return -1;
 
     mrp_list_delete(&m->hook);
 
@@ -900,11 +876,7 @@ static void shareable_del(mrp_cson_t *o, const char *name)
 
     mrp_free(m);
 
-    return;
-
- invalid_type:
-    errno = EINVAL;
-    return;
+    return 0;
 }
 
 
@@ -936,35 +908,18 @@ static int shareable_print_pretty(char *buf, size_t size, mrp_cson_t *o, int lvl
         break;
 
     case MRP_CSON_TYPE_INTEGER:
-        l = snprintf(buf, size, "%d", o->i);
-        break;
-
     case MRP_CSON_TYPE_INT8:
-        l = snprintf(buf, size, "%d", (int)o->s8);
-        break;
-    case MRP_CSON_TYPE_UINT8:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u8);
-        break;
-
     case MRP_CSON_TYPE_INT16:
-        l = snprintf(buf, size, "%d", (int)o->s16);
-        break;
-    case MRP_CSON_TYPE_UINT16:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u16);
-        break;
-
     case MRP_CSON_TYPE_INT32:
-        l = snprintf(buf, size, "%d", (int)o->s32);
-        break;
-    case MRP_CSON_TYPE_UINT32:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u32);
+    case MRP_CSON_TYPE_INT64:
+        l = snprintf(buf, size, "%lld", (long long)o->i);
         break;
 
-    case MRP_CSON_TYPE_INT64:
-        l = snprintf(buf, size, "%ld", o->s64);
-        break;
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
     case MRP_CSON_TYPE_UINT64:
-        l = snprintf(buf, size, "%lu", o->u64);
+        l = snprintf(buf, size, "%llu", (unsigned long long)o->u);
         break;
 
     case MRP_CSON_TYPE_DOUBLE:
@@ -1063,35 +1018,18 @@ static int shareable_print(char *buf, size_t size, mrp_cson_t *o)
         break;
 
     case MRP_CSON_TYPE_INTEGER:
-        l = snprintf(buf, size, "%d", o->i);
-        break;
-
     case MRP_CSON_TYPE_INT8:
-        l = snprintf(buf, size, "%d", (int)o->s8);
-        break;
-    case MRP_CSON_TYPE_UINT8:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u8);
-        break;
-
     case MRP_CSON_TYPE_INT16:
-        l = snprintf(buf, size, "%d", (int)o->s16);
-        break;
-    case MRP_CSON_TYPE_UINT16:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u16);
-        break;
-
     case MRP_CSON_TYPE_INT32:
-        l = snprintf(buf, size, "%d", (int)o->s32);
-        break;
-    case MRP_CSON_TYPE_UINT32:
-        l = snprintf(buf, size, "%u", (unsigned int)o->u32);
+    case MRP_CSON_TYPE_INT64:
+        l = snprintf(buf, size, "%lld", (long long)o->i);
         break;
 
-    case MRP_CSON_TYPE_INT64:
-        l = snprintf(buf, size, "%lld", (long long)o->s64);
-        break;
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
     case MRP_CSON_TYPE_UINT64:
-        l = snprintf(buf, size, "%llu", (unsigned long long)o->u64);
+        l = snprintf(buf, size, "%llu", (unsigned long long)o->u);
         break;
 
     case MRP_CSON_TYPE_DOUBLE:
@@ -1236,32 +1174,681 @@ int mrp_cson_set(mrp_cson_t *o, const char *name, mrp_cson_t *v)
 
 int mrp_cson_del(mrp_cson_t *o, const char *name)
 {
-    if (o == NULL)
-        return 0;
-
-    if (!shareable_object(o) || o->type != MRP_CSON_TYPE_OBJECT)
-        goto invalid_type;
-
-    shareable_del(o, name);
-    return 0;
-
- invalid_type:
-    errno = EINVAL;
-    return -1;
+    return shareable_del(o, name);
 }
 
 
 mrp_cson_t *mrp_cson_get(mrp_cson_t *o, const char *name)
 {
-    mrp_cson_member_t *m;
-
-    if (!o)
-        return NULL;
-
-    m = shareable_get(o, name);
+    mrp_cson_member_t *m = shareable_get(o, name);
 
     return m ? m->value : NULL;
 }
+
+
+const char *mrp_cson_string_value(mrp_cson_t *o, char *buf, size_t size)
+{
+    mrp_cson_type_t  type;
+    const char      *str;
+    int64_t          i;
+    uint64_t         u;
+
+    switch ((type = mrp_cson_get_type(o))) {
+    case MRP_CSON_TYPE_NULL:
+        if (buf != NULL) {
+            if (size < 5)
+                goto overflow;
+            strcpy(buf, "null");
+        }
+        else
+            buf = "null";
+
+        return buf;
+
+    case MRP_CSON_TYPE_FALSE:
+    case MRP_CSON_TYPE_TRUE: {
+        str = (type == MRP_CSON_TYPE_FALSE ? "false" : "true");
+        if (buf != NULL && size > 0) {
+            if (size < (type == MRP_CSON_TYPE_FALSE ? 6 : 5))
+                goto overflow;
+            strcpy(buf, str);
+        }
+        else
+            buf = (char *)str;
+
+        return buf;
+    }
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(o))
+            str = (const char *)compact_value(o);
+        else
+            str = o->str;
+
+        if (buf != NULL) {
+            if (snprintf(buf, size, "%s", str) >= (int)size)
+                goto overflow;
+        }
+        else
+            buf = (char *)str;
+
+        return buf;
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+    case MRP_CSON_TYPE_INT64:
+        if (buf == NULL)
+            goto nobuf;
+        if (compact_object(o))
+            i = (int64_t)compact_value(o);
+        else
+            i = o->i;
+        if (snprintf(buf, size, "%lld", (long long)i) >= (int)size)
+            goto overflow;
+
+        return buf;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (buf == NULL)
+            goto nobuf;
+        if (compact_object(o))
+            u = (uint64_t)compact_value(o);
+        else
+            u = o->u;
+        if (snprintf(buf, size, "%llu", (unsigned long long)u) >= (int)size)
+            goto overflow;
+
+        return buf;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        if (buf == NULL)
+            goto nobuf;
+        if (snprintf(buf, size, "%f", o->dbl) >= (int)size)
+            goto overflow;
+
+        return buf;
+
+    default:
+        if (buf != NULL && size > 0)
+            *buf = '\0';
+        else
+            buf = "";
+
+        return buf;
+    }
+
+ nobuf:
+    errno = ENOBUFS;
+    return NULL;
+
+ overflow:
+    errno = EOVERFLOW;
+    return NULL;
+}
+
+
+int mrp_cson_boolean_value(mrp_cson_t *o)
+{
+    return mrp_cson_integer_value(o) != 0;
+}
+
+
+int mrp_cson_integer_value(mrp_cson_t *o)
+{
+    int64_t i = mrp_cson_int64_value(o);
+
+    if (i < INT_MIN)
+        i = INT_MIN;
+    else if (i > INT_MAX)
+        i = INT_MAX;
+
+    return (int)i;
+}
+
+
+double mrp_cson_double_value(mrp_cson_t *o)
+{
+    const char *str;
+    char       *e;
+    double      dbl;
+    int64_t     i;
+    uint64_t    u;
+
+    switch (mrp_cson_get_type(o)) {
+    case MRP_CSON_TYPE_NULL:
+        return 0.0;
+
+    case MRP_CSON_TYPE_FALSE:
+        return 0.0;
+    case MRP_CSON_TYPE_TRUE:
+        return 1.0;
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(o))
+            str = (const char *)compact_value(o);
+        else
+            str = o->str;
+
+        dbl = strtod(str, &e);
+
+        if (e && *e)
+            goto invalid_value;
+
+        return dbl;
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+    case MRP_CSON_TYPE_INT64:
+        if (compact_object(o))
+            i = (int64_t)compact_value(o);
+        else
+            i = o->i;
+
+        return (double)i;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (compact_object(o))
+            u = (uint64_t)compact_value(o);
+        else
+            u = o->u;
+
+        return (double)u;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        return o->dbl;
+
+    default:
+        return 0.0;
+    }
+
+ invalid_value:
+    errno = EINVAL;
+    return -1.0;
+}
+
+
+int8_t mrp_cson_int8_value(mrp_cson_t *o)
+{
+    int64_t i = mrp_cson_int64_value(o);
+
+    if (i < INT8_MIN)
+        i = INT8_MIN;
+    else if (i > INT8_MAX)
+        i = INT8_MAX;
+
+    return (int8_t)i;
+}
+
+
+int16_t mrp_cson_int16_value(mrp_cson_t *o)
+{
+    int64_t i = mrp_cson_int64_value(o);
+
+    if (i < INT16_MIN)
+        i = INT16_MIN;
+    else if (i > INT16_MAX)
+        i = INT16_MAX;
+
+    return (int16_t)i;
+}
+
+
+int32_t mrp_cson_int32_value(mrp_cson_t *o)
+{
+    int64_t i = mrp_cson_int64_value(o);
+
+    if (i < INT32_MIN)
+        i = INT32_MIN;
+    else if (i > INT32_MAX)
+        i = INT32_MAX;
+
+    return (int32_t)i;
+}
+
+
+int64_t mrp_cson_int64_value(mrp_cson_t *o)
+{
+    const char *str;
+    char       *e;
+    int64_t     i;
+    uint64_t    u;
+
+    switch (mrp_cson_get_type(o)) {
+    case MRP_CSON_TYPE_NULL:
+        return 0;
+
+    case MRP_CSON_TYPE_FALSE:
+        return 0;
+    case MRP_CSON_TYPE_TRUE:
+        return 1;
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(o))
+            str = (const char *)compact_value(o);
+        else
+            str = o->str;
+
+        i = (long long)strtol(str, &e, 10);
+
+        if (e && *e)
+            goto invalid_value;
+
+        return i;
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+    case MRP_CSON_TYPE_INT64:
+        if (compact_object(o))
+            i = (int64_t)compact_value(o);
+        else
+            i = o->i;
+
+        return i;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (compact_object(o))
+            u = (uint64_t)compact_value(o);
+        else
+            u = o->u;
+
+        if (u > LLONG_MAX)
+            u = LLONG_MAX;
+
+        return (int64_t)u;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        if (o->dbl < LLONG_MIN)
+            i = LLONG_MIN;
+        else if (o->dbl > LLONG_MAX)
+            i = LLONG_MAX;
+        else
+            i = (int64_t)o->dbl;
+
+        return i;
+
+    default:
+        return 0;
+    }
+
+ invalid_value:
+    errno = EINVAL;
+    return -1;
+}
+
+
+uint8_t mrp_cson_uint8_value(mrp_cson_t *o)
+{
+    uint64_t u = mrp_cson_uint64_value(o);
+
+    if (u > UINT8_MAX)
+        u = UINT8_MAX;
+
+    return (uint8_t)u;
+}
+
+
+uint16_t mrp_cson_uint16_value(mrp_cson_t *o)
+{
+    uint64_t u = mrp_cson_uint64_value(o);
+
+    if (u > UINT16_MAX)
+        u = UINT16_MAX;
+
+    return (uint16_t)u;
+}
+
+
+uint32_t mrp_cson_uint32_value(mrp_cson_t *o)
+{
+    uint64_t u = mrp_cson_int64_value(o);
+
+    if (u > UINT32_MAX)
+        u = UINT32_MAX;
+
+    return (uint32_t)u;
+}
+
+
+uint64_t mrp_cson_uint64_value(mrp_cson_t *o)
+{
+    const char *str;
+    char       *e;
+    int64_t     i;
+    uint64_t    u;
+
+    switch (mrp_cson_get_type(o)) {
+    case MRP_CSON_TYPE_NULL:
+        return 0;
+
+    case MRP_CSON_TYPE_FALSE:
+        return 0;
+    case MRP_CSON_TYPE_TRUE:
+        return 1;
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(o))
+            str = (const char *)compact_value(o);
+        else
+            str = o->str;
+
+        i = (long long)strtol(str, &e, 10);
+
+        if (e && *e)
+            goto invalid_value;
+
+        return i;
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+    case MRP_CSON_TYPE_INT64:
+        if (compact_object(o))
+            i = (int64_t)compact_value(o);
+        else
+            i = o->i;
+
+        if (i < 0)
+            i = 0;
+
+        return (uint64_t)i;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (compact_object(o))
+            u = (uint64_t)compact_value(o);
+        else
+            u = o->u;
+
+        return u;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        if (o->dbl < 0)
+            u = 0;
+        else if (o->dbl > ULLONG_MAX)
+            u = ULLONG_MAX;
+        else
+            u = (uint64_t)o->dbl;
+
+        return u;
+
+    default:
+        return 0;
+    }
+
+ invalid_value:
+    errno = EINVAL;
+    return -1;
+}
+
+
+
+
+#if 0
+
+int mrp_cson_set_string(mrp_cson_t *o, const char *name, const char *str)
+{
+    mrp_cson_t *v;
+
+    if ((v = mrp_cson_create(MRP_CSON_TYPE_STRING, str)) == NULL)
+        return -1;
+
+    if (shareable_set(o, name, v) < 0) {
+        mrp_cson_unref(v);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+const char *mrp_cson_get_string(mrp_cson_t *o, const char *name)
+{
+    mrp_cson_t *v = mrp_cson_get(o, name);
+
+    if (v == NULL)
+        return NULL;
+
+    if (mrp_cson_get_type(v) != MRP_CSON_TYPE_STRING)
+        goto invalid_type;
+
+    if (compact_object(v))
+        return (const char *)compact_value(v);
+    else
+        return v->str;
+
+ invalid_type:
+    errno = EINVAL;
+    return NULL;
+}
+
+
+int mrp_cson_set_boolean(mrp_cson_t *o, const char *name, int bln)
+{
+    mrp_cson_t *v;
+
+    if ((v = mrp_cson_create(MRP_CSON_TYPE_BOOLEAN, bln)) == NULL)
+        return -1;
+
+    if (shareable_set(o, name, v) < 0) {
+        mrp_cson_unref(v);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+int mrp_cson_get_boolean(mrp_cson_t *o, const char *name)
+{
+    mrp_cson_t *v = mrp_cson_get(o, name);
+    const char *str;
+    int64_t     i;
+    uint64_t    u;
+
+    if (v == NULL)
+        return -1;
+
+    switch (mrp_cson_get_type(v)) {
+    case MRP_CSON_TYPE_NULL:
+        return 0;
+
+    case MRP_CSON_TYPE_FALSE:
+        return 0;
+    case MRP_CSON_TYPE_TRUE:
+        return 1;
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(v))
+            str = (const char *)compact_value(v);
+        else
+            str = v->str;
+
+        return str != NULL && *str != '\0';
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+    case MRP_CSON_TYPE_INT64:
+        if (compact_object(v))
+            i = (int64_t)compact_value(v);
+        else
+            i = v->i;
+
+        return i != 0;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (compact_object(v))
+            u = (uint64_t)compact_value(v) != 0;
+        else
+            u = v->u;
+
+        return u != 0;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        return v->dbl != 0.0;
+
+    case MRP_CSON_TYPE_OBJECT:
+        return !mrp_list_empty(&v->object.members);
+
+    case MRP_CSON_TYPE_ARRAY:
+        return v->array.nitem != 0;
+
+    default:
+        return 0;
+    }
+}
+
+
+int mrp_cson_set_integer(mrp_cson_t *o, const char *name, int i)
+{
+    mrp_cson_t *v;
+
+    if ((v = mrp_cson_create(MRP_CSON_TYPE_INTEGER, i)) == NULL)
+        return -1;
+
+    if (shareable_set(o, name, v) < 0) {
+        mrp_cson_unref(v);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+int mrp_cson_get_integer(mrp_cson_t *o, const char *name)
+{
+    mrp_cson_t *v = mrp_cson_get(o, name);
+    const char *str;
+    char       *e;
+    int         i;
+    int64_t     i64;
+    uint64_t    u;
+
+    if (v == NULL)
+        return -1;
+
+    switch (mrp_cson_get_type(v)) {
+    case MRP_CSON_TYPE_NULL:
+        return 0;
+
+    case MRP_CSON_TYPE_FALSE:
+        return 0;
+    case MRP_CSON_TYPE_TRUE:
+        return 1;
+
+    case MRP_CSON_TYPE_STRING:
+        if (compact_object(v))
+            str = (const char *)compact_value(v);
+        else
+            str = v->str;
+
+        i = strtol(str, &e, 10);
+
+        if (e && *e) {
+            errno = EINVAL;
+            i = -1;
+        }
+
+        return i;
+
+    case MRP_CSON_TYPE_INTEGER:
+    case MRP_CSON_TYPE_INT8:
+    case MRP_CSON_TYPE_INT16:
+    case MRP_CSON_TYPE_INT32:
+        if (compact_object(v))
+            i = (int)compact_value(v);
+        else
+            i = (int)v->i;
+
+        return i;
+
+    case MRP_CSON_TYPE_INT64:
+        if (compact_object(v))
+            i64 = (int64_t)compact_value(v);
+        else
+            i64 = (int64_t)v->i;
+
+        if (i64 < INT_MIN)
+            i = INT_MIN;
+        else if (i64 > INT_MAX)
+            i = INT_MAX;
+        else
+            i = (int)i64;
+
+        return i;
+
+    case MRP_CSON_TYPE_UINT8:
+    case MRP_CSON_TYPE_UINT16:
+    case MRP_CSON_TYPE_UINT32:
+    case MRP_CSON_TYPE_UINT64:
+        if (compact_object(v))
+            u = (uint64_t)compact_value(v);
+        else
+            u = v->u;
+
+        if (u > INT_MAX)
+            i = INT_MAX;
+        else
+            i = (int)u;
+
+        return i;
+
+    case MRP_CSON_TYPE_DOUBLE:
+        if (v->dbl > INT_MAX)
+            i = INT_MAX;
+        else if (v->dbl < INT_MIN)
+            i = INT_MIN;
+        else
+            i = (int)v->dbl;
+
+        return i;
+
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
+
+
+int mrp_cson_set_int8(mrp_cson_t *o, const char *name, int8_t i)
+{
+    mrp_cson_t *v;
+
+    if ((v = mrp_cson_create(MRP_CSON_TYPE_INT8, i)) == NULL)
+        return -1;
+
+    if (shareable_set(o, name, v) < 0) {
+        mrp_cson_unref(v);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+#endif
 
 
 static int cson_printf_p(FILE *fp, const struct printf_info *info,

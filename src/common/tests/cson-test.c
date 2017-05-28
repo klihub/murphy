@@ -71,17 +71,17 @@ int main(int argc, char *argv[])
     mrp_cson_set_default_mode(MRP_CSON_TYPE_COMPACT);
 
     test = mrp_allocz(8192);
-    printf("test pointer: %p (0x%x)\n", test, (ptrdiff_t)test);
+    printf("test pointer: %p (0x%llx)\n", test, (unsigned long long)test);
 
     printf("__MRP_PTRBITS: %d\n", __MRP_PTRBITS);
-    printf("sizeof(int): %u, sizeof(long): %u, sizeof(ptrdiff_t): %u\n",
+    printf("sizeof(int): %zu, sizeof(long): %zu, sizeof(ptrdiff_t): %zu\n",
            sizeof(int), sizeof(long), sizeof(ptrdiff_t));
 
     printf("compact: 0x%llx\n", MRP_CSON_COMPACT_BIT);
     printf(" int8<<: 0x%llx\n",
-           ((uint64_t)MRP_CSON_TYPE_INT8) << MRP_CSON_TYPE_SHIFT);
+           ((unsigned long long)MRP_CSON_TYPE_INT8) << MRP_CSON_TYPE_SHIFT);
     printf(" int64<: 0x%llx\n",
-           ((uint64_t)MRP_CSON_TYPE_UINT64) << MRP_CSON_TYPE_SHIFT);
+           ((unsigned long long)MRP_CSON_TYPE_UINT64) << MRP_CSON_TYPE_SHIFT);
 
     printf("    char: %d - %d\n"  , SCHAR_MIN        , SCHAR_MAX         );
     printf("     int: %d - %d\n"  , INT_MIN          , INT_MAX           );
@@ -92,15 +92,15 @@ int main(int argc, char *argv[])
     printf(" uint8_t: %u - %u\n"  , 0                , MRP_CSON_MAXUINT8 );
     printf("uint16_t: %u - %u\n"  , 0                , MRP_CSON_MAXUINT16);
     printf("uint32_t: %u - %u\n"  , 0                , MRP_CSON_MAXUINT32);
-    printf("uint64_t: %lu - %lu\n", 0                , MRP_CSON_MAXUINT64);
+    printf("uint64_t: %lu - %lu\n", 0L               , MRP_CSON_MAXUINT64);
 
     for (i8 = MRP_CSON_MININT8; i8 < MRP_CSON_MAXINT8; i8++) {
         co = mrp_cson_create(MRP_CSON_TYPE_INT8, i8);
-        v  = mrp_cson_compact_value(co);
+        v  = (mrp_cson_t *)mrp_cson_compact_value(co);
 
         printf("int8_t %d: 0x%x (-0x%x), co: %p, v: %p\n", i8, i8, -i8, co, v);
 
-        if (v != i8) {
+        if ((ptrdiff_t)v != i8) {
             printf("int8_t broken...\n");
             exit(1);
         }
@@ -108,7 +108,7 @@ int main(int argc, char *argv[])
 
     for (i16 = MRP_CSON_MININT16; i16 < MRP_CSON_MAXINT16; i16++) {
         co = mrp_cson_create(MRP_CSON_TYPE_INT16, i16);
-        v  = mrp_cson_compact_value(co);
+        v  = (mrp_cson_t *)mrp_cson_compact_value(co);
 
         if (!(i16 % 1024) || (ptrdiff_t)v != i16)
         printf("int16_t %d: 0x%x, co: %p, v: %p\n", i16, i16, co, v);
@@ -122,7 +122,7 @@ int main(int argc, char *argv[])
 #if 0
     for (i32 = MRP_CSON_MININT32; i32 < MRP_CSON_MAXINT32; i32++) {
         co = mrp_cson_create(MRP_CSON_TYPE_INT32, i32);
-        v  = mrp_cson_compact_value(co);
+        v  = (mrp_cson_t *)mrp_cson_compact_value(co);
 
         if (!(i32 % (4 * 1024 * 1024)) || (ptrdiff_t)v != i32)
             printf("int32_t %d: 0x%x, co: %p, v: %p\n", i32, i32, co, v);
@@ -135,7 +135,7 @@ int main(int argc, char *argv[])
 
     for (i64 = MRP_CSON_MININT64; i64 < MRP_CSON_MAXINT64; i64++) {
         co = mrp_cson_create(MRP_CSON_TYPE_INT64, i64);
-        v  = mrp_cson_compact_value(co);
+        v  = (mrp_cson_t *)mrp_cson_compact_value(co);
 
         if (!(i64 % (64 * 1024 * 1024)) || (ptrdiff_t)v != i64)
             printf("int64_t %lld: 0x%llx, co: %p, v: 0x%llx\n",
@@ -156,7 +156,7 @@ int main(int argc, char *argv[])
             exit(1);
         }
 
-        v = mrp_cson_compact_value(co);
+        v = (mrp_cson_t *)mrp_cson_compact_value(co);
 
         if (strcmp(*str, (char *)v)) {
             printf("compact string value mismatch for '%s'\n", *str);
@@ -204,6 +204,29 @@ int main(int argc, char *argv[])
         printf("getting 'double' member failed\n");
     if (mrp_cson_get(o, "array") != a)
         printf("getting 'array' member failed\n");
+
+#if 0
+    if (mrp_cson_set_string(o, "string", "another string") < 0)
+        printf("setting 'string' member failed\n");
+
+    if (mrp_cson_set_boolean(o, "true-value", TRUE) < 0)
+        printf("setting 'true-value' member failed\n");
+
+    if (mrp_cson_set_boolean(o, "false-value", FALSE) < 0)
+        printf("setting 'false-value' member failed\n");
+
+    if (mrp_cson_set_integer(o, "int", 1973) < 0)
+        printf("setting 'int' member failed\n");
+
+    if (mrp_cson_get_boolean(o, "true-value") != TRUE)
+        printf("getting 'true-value' member mismatch\n");
+
+    if (mrp_cson_get_boolean(o, "false-value") != FALSE)
+        printf("getting 'false-value' member mismatch\n");
+
+    if (mrp_cson_get_integer(o, "int") != 1973)
+        printf("getting 'int' member mismatch\n");
+#endif
 
     fprintf(stdout, "%p: pretty: %#CSONp\n", o, o);
     fprintf(stdout, "%p: normal: %CSONp\n", o, o);
