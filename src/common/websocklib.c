@@ -62,14 +62,13 @@
  * define shorter aliasen for libwebsocket types
  */
 
-typedef struct libwebsocket                  lws_t;
-typedef struct libwebsocket_context          lws_ctx_t;
-typedef struct libwebsocket_extension        lws_ext_t;
-typedef struct libwebsocket_protocols        lws_proto_t;
-typedef enum   libwebsocket_callback_reasons lws_event_t;
-typedef struct lws_context_creation_info lws_cci_t;
-
-static lws_ext_t *lws_get_internal_extensions(void);
+typedef struct lws                  lws_t;
+typedef struct lws_context          lws_ctx_t;
+typedef struct lws_extension        lws_ext_t;
+typedef struct lws_protocols        lws_proto_t;
+typedef enum   lws_callback_reasons lws_event_t;
+typedef struct lws_context_creation_info lws_cci_t; /* XXX TODO lws_cxci_t */
+typedef struct lws_client_connect_info   lws_cct_t; /* XXX TODO lws_ctci_t */
 
 /*
  * a libwebsocket fd we (e)poll
@@ -148,9 +147,9 @@ struct wsl_sck_s {
 
 
 
-static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
+static int http_event(lws_t *ws, lws_event_t event,
                       void *user, void *in, size_t len);
-static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
+static int wsl_event(lws_t *ws, lws_event_t event,
                      void *user, void *in, size_t len);
 static void destroy_context(wsl_ctx_t *ctx);
 
@@ -331,7 +330,7 @@ static void epoll_event(mrp_io_watch_t *w, int fd, mrp_io_event_t mask,
                 mrp_debug("delivering events 0x%x to websocket fd %d",
                           pollfd.revents, pollfd.fd);
 
-                libwebsocket_service_fd(wsc->ctx, &pollfd);
+                lws_service_fd(wsc->ctx, &pollfd);
             }
         }
     }
@@ -350,7 +349,7 @@ static void destroy_context_table(void)
 
 static wsl_ctx_t *get_context_userdata(lws_ctx_t *ws_ctx)
 {
-    return libwebsocket_context_user(ws_ctx);
+    return lws_context_user(ws_ctx);
 }
 
 
@@ -362,13 +361,9 @@ static void clear_context_userdata(lws_ctx_t *ws_ctx)
 
 static lws_ctx_t *lws_create_ctx(lws_cci_t *cci)
 {
-    return libwebsocket_create_context(cci);
+    return lws_create_context(cci);
 }
 
-static lws_ext_t *lws_get_internal_extensions(void)
-{
-    return libwebsocket_get_internal_extensions();
-}
 
 static int find_device(struct sockaddr *sa, char *buf, size_t size)
 {
@@ -596,7 +591,7 @@ static void destroy_context(wsl_ctx_t *ctx)
 
         if (ctx->ctx != NULL) {
             clear_context_userdata(ctx->ctx);
-            libwebsocket_context_destroy(ctx->ctx);
+            lws_context_destroy(ctx->ctx);
         }
 
         mrp_free(ctx->lws_protos);
@@ -647,6 +642,7 @@ static wsl_sck_t *find_pure_http(wsl_ctx_t *ctx, lws_t *ws)
 wsl_sck_t *wsl_connect(wsl_ctx_t *ctx, struct sockaddr *sa,
                        const char *protocol, wsl_ssl_t ssl, void *user_data)
 {
+    lws_cct_t    cct;
     wsl_sck_t   *sck, **ptr;
     wsl_proto_t *up;
     int          port;
@@ -729,12 +725,18 @@ wsl_sck_t *wsl_connect(wsl_ctx_t *ctx, struct sockaddr *sa,
             else
                 mrp_list_append(&ctx->pure_http, &sck->hook);
 
-            sck->sck = libwebsocket_client_connect_extended(ctx->ctx,
-                                                            astr, port,
-                                                            ssl,
-                                                            "/", astr, astr,
-                                                            protocol, -1,
-                                                            ptr);
+            mrp_clear(&cct);
+            cct.context        = ctx->ctx;
+            cct.address        = astr;
+            cct.port           = port;
+            cct.ssl_connection = ssl;
+            cct.protocol       = protocol;
+            cct.path           = "/";
+            cct.host           = astr;
+            cct.origin         = NULL; /* XXX TODO */
+            cct.userdata       = ptr;
+
+            sck->sck = lws_client_connect_via_info(&cct);
 
             if (sck->sck != NULL)
                 return sck;
@@ -882,7 +884,7 @@ void *wsl_close(wsl_sck_t *sck)
             mrp_free(sck);
 
             if (ws_ctx != NULL)
-                libwebsocket_callback_on_writable(ws_ctx, ws);
+                lws_callback_on_writable(ws);
         }
         else
             sck->closing = TRUE;
@@ -953,7 +955,7 @@ int wsl_send(wsl_sck_t *sck, void *payload, size_t size)
             sck->send_mode = WSL_SEND_TEXT;
 #endif
 
-        if (libwebsocket_write(sck->sck, buf + pre, total, sck->send_mode) >= 0)
+        if (lws_write(sck->sck, buf + pre, total, sck->send_mode) >= 0)
             return TRUE;
     }
 
@@ -965,8 +967,7 @@ int wsl_serve_http_file(wsl_sck_t *sck, const char *path, const char *type)
 {
     mrp_debug("serving file '%s' (%s) over websocket %p", path, type, sck->sck);
 
-    if (libwebsockets_serve_http_file(sck->ctx->ctx, sck->sck, path,
-                                      type, NULL) == 0)
+    if (lws_serve_http_file(sck->sck, path, type, NULL, 0) == 0)
         return TRUE;
     else
         return FALSE;
@@ -975,44 +976,78 @@ int wsl_serve_http_file(wsl_sck_t *sck, const char *path, const char *type)
 
 #ifdef LWS_OPENSSL_SUPPORT
 
-static void load_extra_certs(wsl_ctx_t *ctx, void *user, lws_event_t event)
+static int load_extra_certs(wsl_ctx_t *ctx, void *user, const char *crl,
+                            lws_event_t event)
 {
-    int is_server;
+    int                is_server, n;
+    SSL_CTX           *ssl;
+    X509_VERIFY_PARAM *param;
+    X509_STORE        *store;
+    X509_LOOKUP       *lookup;
 
-    if (ctx != NULL && ctx->load_certs != NULL) {
-        if (event == LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS)
-            is_server = TRUE;
-        else
-            is_server = FALSE;
+    if (ctx == NULL)
+        return -1;
 
-        ctx->load_certs(ctx, (SSL_CTX *)user, is_server);
+    if (!crl || !*crl)
+        return 0;
+
+    if (event == LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS)
+        is_server = TRUE;
+    else
+        is_server = FALSE;
+
+#if defined(LWS_HAVE_SSL_CTX_set1_param)
+    ssl = (SSL_CTX *)user;
+    param = X509_VERIFY_PARAM_new();
+    X509_VERIFY_PARAM_set_flags(param, X509_V_FLAG_CRL_CHECK);
+    SSL_CTX_set1_param(ssl, param);
+    store = SSL_CTX_get_cert_store(ssl);
+    lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
+    n = X509_load_cert_crl_file(lookup, crl, X509_FILETYPE_PEM);
+    X509_VERIFY_PARAM_free(param);
+
+    if (n != 1) {
+        char err[256];
+        n = ERR_get_error();
+        mrp_log_error("%s extra certificates: SSL error: %d (%s)",
+                      is_server ? "server" : "client",
+                      n, ERR_error_string(n, err));
+        return -1;
     }
+
+    return 0;
+#else
+    return -1;
+#endif
 }
 
 
 static int verify_client_cert(void *user, void *in, size_t len)
 {
-    X509_STORE_CTX *x509_ctx;
     SSL            *ssl;
-    int             pre_ok;
+    X509_STORE_CTX *store;
+    int             err, depth;
+    const char     *msg;
 
-    if (verify_client_cert_cb != NULL) {
-        x509_ctx = (X509_STORE_CTX *)user;
-        ssl      = (SSL *)in;
-        pre_ok   = (int)len;
+    ssl = (SSL *)in;
+    if (!len || (SSL_get_verify_result(ssl) != X509_V_OK)) {
+        store = (X509_STORE_CTX *)user;
+        err   = X509_STORE_CTX_get_error(store);
+        depth = X509_STORE_CTX_get_error_depth(store);
+        msg   = X509_verify_cert_error_string(err);
 
-        if (verify_client_cert_cb(x509_ctx, ssl, pre_ok))
-            return TRUE;
-        else
-            return FALSE;
+        mrp_log_error("certification failure: %d (%s), depth: %d",
+                      err, msg, depth);
+        return FALSE;
     }
-    else
-        return TRUE;
+
+    return TRUE;
 }
 
 #else /* !LWS_OPENSSL_SUPPORT */
 
-static void load_extra_certs(wsl_ctx_t *ctx, void *user, lws_event_t event)
+static void load_extra_certs(wsl_ctx_t *ctx, void *user, const char *crl,
+                             lws_event_t event)
 {
     MRP_UNUSED(ctx);
     MRP_UNUSED(user);
@@ -1034,30 +1069,11 @@ static int verify_client_cert(void *user, void *in, size_t len)
 #endif
 
 
-static int getpollfd(void *user, void *in, size_t len, int *fd, int *mask)
-{
-    struct libwebsocket_pollargs *args;
-
-    MRP_UNUSED(user);
-    MRP_UNUSED(in);
-
-    args = (struct libwebsocket_pollargs *)in;
-
-    *fd = args->fd;
-    if (mask != NULL)
-        *mask = args->events;
-
-    if (*fd != 0)
-        return 0;
-    else
-        return -1;
-}
-
-
-static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
+static int http_event(lws_t *ws, lws_event_t event,
                       void *user, void *in, size_t len)
 {
-    wsl_ctx_t   *ctx = get_context_userdata(ws_ctx);
+    lws_ctx_t   *ws_ctx = lws_get_context(ws);
+    wsl_ctx_t   *ctx    = get_context_userdata(ws_ctx);
     wsl_sck_t   *sck;
     wsl_proto_t *up;
     const char  *ext, *uri;
@@ -1100,7 +1116,7 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
          */
 
     case LWS_CALLBACK_ADD_POLL_FD: {
-        struct libwebsocket_pollargs *pa = (struct libwebsocket_pollargs *)in;
+        struct lws_pollargs *pa = (struct lws_pollargs *)in;
         fd   = pa->fd;
         mask = pa->events;
 
@@ -1112,7 +1128,7 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
     }
 
     case LWS_CALLBACK_DEL_POLL_FD: {
-        struct libwebsocket_pollargs *pa = (struct libwebsocket_pollargs *)in;
+        struct lws_pollargs *pa = (struct lws_pollargs *)in;
         fd = pa->fd;
 
         mrp_debug("stop polling fd %d", fd);
@@ -1123,7 +1139,7 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
     }
 
     case LWS_CALLBACK_CHANGE_MODE_POLL_FD: {
-        struct libwebsocket_pollargs *pa = (struct libwebsocket_pollargs *)in;
+        struct lws_pollargs *pa = (struct lws_pollargs *)in;
         fd   = pa->fd;
         mask = pa->events;
 
@@ -1309,17 +1325,11 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS:
-        load_extra_certs(ctx, user, event);
-        return LWS_EVENT_OK;
-
-#ifdef LWS_OPENSSL_SUPPORT
-        if (ctx != NULL && ctx->load_certs != NULL)
-            ctx->load_certs(ctx, user, FALSE);
-#endif
+        load_extra_certs(ctx, user, NULL, event);
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS:
-        load_extra_certs(ctx, user, TRUE);
+        load_extra_certs(ctx, user, NULL, TRUE);
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION:
@@ -1352,10 +1362,11 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
 }
 
 
-static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
+static int wsl_event(lws_t *ws, lws_event_t event,
                      void *user, void *in, size_t len)
 {
-    wsl_ctx_t   *ctx = get_context_userdata(ws_ctx);
+    lws_ctx_t   *ws_ctx = lws_get_context(ws);
+    wsl_ctx_t   *ctx    = get_context_userdata(ws_ctx);
     wsl_sck_t   *sck;
     wsl_proto_t *up;
     void        *data;
@@ -1408,7 +1419,7 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         }
 
 
-        proto = (lws_proto_t *)libwebsockets_get_protocol(ws);
+        proto = (lws_proto_t *)lws_get_protocol(ws);
         up    = find_context_protocol(ctx, proto->name);
 
         if (up == NULL) {
@@ -1442,7 +1453,7 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         return status;
 
     case LWS_CALLBACK_CLOSED:
-        proto = (lws_proto_t *)libwebsockets_get_protocol(ws);
+        proto = (lws_proto_t *)lws_get_protocol(ws);
         up    = find_context_protocol(ctx, proto->name);
         mrp_debug("websocket %p/%p (%s) closed", ws, user,
                   up ? up->name : "<unknown>");
@@ -1472,7 +1483,7 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
     case LWS_CALLBACK_CLIENT_RECEIVE:
         mrp_debug("%zu bytes received on websocket %p/%p", len, ws, user);
         mrp_debug("%zd remaining from this message",
-                  libwebsockets_remaining_packet_payload(ws));
+                  lws_remaining_packet_payload(ws));
 
         sck = *(wsl_sck_t **)user;
         up  = sck ? sck->proto : NULL;
@@ -1480,7 +1491,7 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         if (up != NULL) {
             if (!up->framed && !mrp_fragbuf_missing(sck->buf)) {
                 /* new packet of an unframed protocol, push message size */
-                total = len + libwebsockets_remaining_packet_payload(ws);
+                total = len + lws_remaining_packet_payload(ws);
                 mrp_debug("unframed protocol, total message size %u", total);
 
                 total = htobe32(total);
