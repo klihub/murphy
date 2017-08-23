@@ -51,11 +51,7 @@
 #define LWS_EVENT_CLOSE -1               /* event handler result: close */
 
 /* libwebsocket status used to close sockets upon error */
-#ifndef WEBSOCKETS_OLD
-#    define LWS_INTERNAL_ERROR LWS_CLOSE_STATUS_UNEXPECTED_CONDITION
-#else
-#    define LWS_INTERNAL_ERROR LWS_CLOSE_STATUS_PROTOCOL_ERR /* arrghmm... */
-#endif
+#define LWS_INTERNAL_ERROR LWS_CLOSE_STATUS_UNEXPECTED_CONDITION
 
 /* SSL modes */
 #define LWS_NO_SSL         0             /* no SSL at all */
@@ -71,27 +67,7 @@ typedef struct libwebsocket_context          lws_ctx_t;
 typedef struct libwebsocket_extension        lws_ext_t;
 typedef struct libwebsocket_protocols        lws_proto_t;
 typedef enum   libwebsocket_callback_reasons lws_event_t;
-#ifdef WEBSOCKETS_CONTEXT_INFO
-    typedef struct lws_context_creation_info lws_cci_t;
-#else /* !WEBSOCKETS_CONTEXT_INFO */
-typedef struct {
-    int port;
-    const char *iface;
-    struct libwebsocket_protocols *protocols;
-    struct libwebsocket_extension *extensions;
-    const char *ssl_cert_filepath;
-    const char *ssl_private_key_filepath;
-    const char *ssl_ca_filepath;
-    const char *ssl_cipher_list;
-    int gid;
-    int uid;
-    unsigned int options;
-    void *user;
-    int ka_time;
-    int ka_probes;
-    int ka_interval;
-} lws_cci_t;
-#endif /* !WEBSOCKETS_CONTEXT_INFO */
+typedef struct lws_context_creation_info lws_cci_t;
 
 static lws_ext_t *lws_get_internal_extensions(void);
 
@@ -366,176 +342,6 @@ static void epoll_event(mrp_io_watch_t *w, int fd, mrp_io_event_t mask,
  * context handling
  */
 
-#ifdef WEBSOCKETS_OLD
-
-/*
- * Notes:
- *     In some environments we might be forced to run with really old
- *     versions of libwebsockets. This causes some amount of pain as
- *     some of the recent features in libwebsockets are essential for
- *     building a reasonable abstraction on top of it.
- *
- *     Most notably, versions prior to 0291eb3..d764e84 (Oct 19 2012)
- *     do not support per-context user data. Since we need to associate
- *     our context with that of libwebsockets we have to build an extra
- *     mechanism for mapping between the two when user data support is
- *     not available. We use an extra hash table to store our context
- *     and use directly the (low 32-bits of the) libwebsocket context
- *     pointer as the key to store and fetch it.
- *
- *     To minimize unreadibility and other code uglification factors,
- *     most of the code that deals with this version-dependent extra
- *     mechanism is put into the contamination chamber formed by the
- *     triplet of {set,get,clear}_context_userdata routines below.
- *
- *     Note that since we decided (maybe unecessarily) to do mainloop
- *     integration also on a per-context basis, with old versions we
- *     also have a phase error: the first pollfd manipulation events
- *     for a context being created come __before__ the libwebsockets
- *     context creation routine returns, IOW before we get a chance to
- *     administer the reverse mapping between the contexts. This is
- *     unfortunate because if we cannot find our context for a pollfd
- *     request/event we just cannot handle it. This in turn would result
- *     in a practically useless context as its socket would not be
- *     (e)polled at all.
- *
- *     The ugly pending_userdata kludge below is to overcome this problem.
- *     While creating a context, we register its intended userdata as the
- *     pending userdata before calling libwebsockets context creation
- *     routine and clear it afterwards. get_context_userdata knows to
- *     return the pending_userdata if it cannot do the reverse mapping
- *     using the libwebsocket context pointer. While this is quite ugly,
- *     I really don't see any other way. A limitation of this is that we
- *     cannot have two unfinished contexts being created in parallel, but
- *     that really should not happen under any circumstances anyway.
- */
-
-
-static mrp_htbl_t *ctxtbl;
-static void       *pending_userdata;
-
-static int ctx_cmp(const void *ctx1, const void *ctx2)
-{
-    return ctx2 - ctx1;
-}
-
-static uint32_t ctx_hash(const void *ctx)
-{
-    uint64_t h;
-
-    h = (ptrdiff_t)ctx;
-
-    return (uint32_t)(h & 0xffffffff);
-}
-
-static int create_context_table(void)
-{
-    mrp_htbl_config_t hcfg;
-
-    if (ctxtbl == NULL) {
-        mrp_clear(&hcfg);
-
-        hcfg.comp = ctx_cmp;
-        hcfg.hash = ctx_hash;
-        hcfg.free = NULL;
-
-        ctxtbl = mrp_htbl_create(&hcfg);
-
-        return (ctxtbl != NULL);
-    }
-    else
-        return TRUE;
-}
-
-static void destroy_context_table(void)
-{
-    if (ctxtbl != NULL)
-        mrp_htbl_destroy(ctxtbl, FALSE);
-}
-
-
-static int set_pending_userdata(void *ptr)
-{
-    if (pending_userdata == NULL) {
-        pending_userdata = ptr;
-        return TRUE;
-    }
-    else
-        return FALSE;
-}
-
-
-static void clear_pending_userdata(void *ptr)
-{
-    if (pending_userdata == ptr)
-        pending_userdata = NULL;
-}
-
-
-static void *get_pending_userdata(void)
-{
-    return pending_userdata;
-}
-
-
-static int set_context_userdata(lws_ctx_t *ws_ctx, wsl_ctx_t *ctx)
-{
-    if (ctxtbl == NULL)
-        create_context_table();
-
-    if (ctxtbl != NULL)
-        return mrp_htbl_insert(ctxtbl, ws_ctx, ctx);
-    else
-        return FALSE;
-}
-
-
-static wsl_ctx_t *get_context_userdata(lws_ctx_t *ws_ctx)
-{
-    wsl_ctx_t *ctx;
-
-    if (ctxtbl != NULL)
-        ctx = (wsl_ctx_t *)mrp_htbl_lookup(ctxtbl, (void *)ws_ctx);
-    else
-        ctx = NULL;
-
-    if (ctx != NULL)
-        return ctx;
-    else
-        return get_pending_userdata();
-}
-
-
-static void clear_context_userdata(lws_ctx_t *ws_ctx)
-{
-    if (ctxtbl != NULL)
-        mrp_htbl_remove(ctxtbl, ws_ctx, FALSE);
-}
-
-
-static lws_ctx_t *lws_create_ctx(lws_cci_t *cci)
-{
-    lws_ctx_t *ws_ctx;
-
-    set_pending_userdata(cci->user);
-
-    ws_ctx = libwebsocket_create_context(cci->port, cci->iface,
-                                         cci->protocols, cci->extensions,
-                                         cci->ssl_cert_filepath,
-                                         cci->ssl_private_key_filepath,
-                                         /* no ssl_ca */
-                                         cci->gid, cci->uid, cci->options
-                                         /*no user_data*/);
-    if (ws_ctx != NULL)
-        set_context_userdata(ws_ctx, cci->user);
-
-    clear_pending_userdata(cci->user);
-
-    return ws_ctx;
-}
-
-#else /* !WEBSOCKETS_OLD */
-
 static void destroy_context_table(void)
 {
     return;
@@ -556,28 +362,12 @@ static void clear_context_userdata(lws_ctx_t *ws_ctx)
 
 static lws_ctx_t *lws_create_ctx(lws_cci_t *cci)
 {
-#ifdef WEBSOCKETS_CONTEXT_INFO
     return libwebsocket_create_context(cci);
-#else
-    return libwebsocket_create_context(cci->port, cci->iface,
-                                       cci->protocols, cci->extensions,
-                                       cci->ssl_cert_filepath,
-                                       cci->ssl_private_key_filepath,
-                                       cci->ssl_ca_filepath,
-                                       cci->gid, cci->uid, cci->options,
-                                       cci->user);
-#endif
 }
-
-#endif /* !WEBSOCKETS_OLD */
 
 static lws_ext_t *lws_get_internal_extensions(void)
 {
-#ifdef WEBSOCKETS_QUERY_EXTENSIONS
     return libwebsocket_get_internal_extensions();
-#else
-    return libwebsocket_internal_extensions;
-#endif
 }
 
 static int find_device(struct sockaddr *sa, char *buf, size_t size)
@@ -743,15 +533,7 @@ wsl_ctx_t *wsl_create_context(mrp_mainloop_t *ml, wsl_ctx_cfg_t *cfg)
     cci.ssl_cert_filepath        = cfg->ssl_cert;
     cci.ssl_private_key_filepath = cfg->ssl_pkey;
     cci.ssl_ca_filepath          = cfg->ssl_ca;
-#ifdef WEBSOCKETS_CIPHER_LIST
     cci.ssl_cipher_list          = cfg->ssl_ciphers;
-#else
-    if (cfg->ssl_ciphers != NULL) {
-        mrp_log_error("setting libwebsockets cipher list not supported");
-        errno = EOPNOTSUPP;
-        return NULL;
-    }
-#endif
 
     cci.options     = 0;
     cci.ka_time     = cfg->timeout;
@@ -1037,68 +819,6 @@ void wsl_reject_pending(wsl_ctx_t *ctx)
 }
 
 
-#ifdef WEBSOCKETS_CLOSE_SESSION
-
-/*
- * WTF ? The prototype for this has been moved from libwebsockets.h to
- * the uninstalled private-libwebsockets.h. If this is really going to
- * be made private eventually, how is one supposed to close a websocket
- * without closing its context and a side effect all other websockets
- * associated with the same context ?
- */
-extern void libwebsocket_close_and_free_session(struct libwebsocket_context *,
-                                                struct libwebsocket *,
-                                                enum lws_close_status);
-
-
-void *wsl_close(wsl_sck_t *sck)
-{
-    wsl_ctx_t *ctx;
-    void      *user_data;
-    int        status;
-
-    user_data = NULL;
-
-    if (sck != NULL) {
-        if (sck->sck != NULL && sck->busy <= 0) {
-            mrp_debug("closing websocket %p/%p", sck, sck->sck);
-
-            status = LWS_CLOSE_STATUS_NORMAL;
-            ctx    = sck->ctx;
-
-            sck->closing = TRUE;
-            libwebsocket_close_and_free_session(ctx->ctx, sck->sck, status);
-            sck->sck     = NULL;
-
-            if (sck->sckptr != NULL)     /* genuine websocket */
-                *sck->sckptr = NULL;
-            else                         /* pure http socket */
-                mrp_list_delete(&sck->hook);
-
-            if (ctx != NULL) {
-                user_data = ctx->user_data;
-                wsl_unref_context(ctx);
-                sck->ctx = NULL;
-            }
-
-            mrp_fragbuf_destroy(sck->buf);
-            sck->buf = NULL;
-
-            mrp_debug("freeing websocket %p", sck);
-            mrp_free(sck);
-        }
-        else {
-            mrp_debug("marking websocket %p/%p for closing", sck, sck->sck);
-            sck->closing = TRUE;
-        }
-    }
-
-    return user_data;
-}
-
-
-#else /* !WEBSOCKET_CLOSE_SESSION */
-
 void *wsl_close(wsl_sck_t *sck)
 {
     lws_ctx_t *ws_ctx;
@@ -1170,9 +890,6 @@ void *wsl_close(wsl_sck_t *sck)
 
     return user_data;
 }
-
-
-#endif /* !WEBSOCKET_CLOSE_SESSION */
 
 
 static int check_closed(wsl_sck_t *sck)
@@ -1248,25 +965,11 @@ int wsl_serve_http_file(wsl_sck_t *sck, const char *path, const char *type)
 {
     mrp_debug("serving file '%s' (%s) over websocket %p", path, type, sck->sck);
 
-#ifndef WEBSOCKETS_OLD
-#  ifdef WEBSOCKETS_SERVE_FILE_EXTRAARG
     if (libwebsockets_serve_http_file(sck->ctx->ctx, sck->sck, path,
                                       type, NULL) == 0)
         return TRUE;
     else
         return FALSE;
-#  else
-    if (libwebsockets_serve_http_file(sck->ctx->ctx, sck->sck, path, type) == 0)
-        return TRUE;
-    else
-        return FALSE;
-#  endif
-#else
-    if (libwebsockets_serve_http_file(sck->sck, path, type) == 0)
-        return TRUE;
-    else
-        return FALSE;
-#endif
 }
 
 
@@ -1333,7 +1036,6 @@ static int verify_client_cert(void *user, void *in, size_t len)
 
 static int getpollfd(void *user, void *in, size_t len, int *fd, int *mask)
 {
-#if defined WEBSOCKETS_PASSFD_POLLARGS
     struct libwebsocket_pollargs *args;
 
     MRP_UNUSED(user);
@@ -1344,39 +1046,6 @@ static int getpollfd(void *user, void *in, size_t len, int *fd, int *mask)
     *fd = args->fd;
     if (mask != NULL)
         *mask = args->events;
-
-#elif defined WEBSOCKETS_PASSFD_IN
-    static int misdetected = 0;
-    int ufd = (ptrdiff_t)user;
-
-    if (!misdetected) {
-        *fd = (ptrdiff_t)in;
-        if (mask != NULL)
-            *mask = (int)len;
-
-        if (0 < ufd && ufd < 4096) {
-            misdetected = 1;
-            mrp_log_error("*** websockets fd passing convention misdetected.");
-            mrp_log_error("*** fixing it up...");
-            goto fixup;
-        }
-    }
-    else {
-    fixup:
-
-        *fd = ufd;
-        if (mask != NULL)
-            *mask = (int)len;
-    }
-
-#else
-    MRP_UNUSED(in);
-
-    *fd = (ptrdiff_t)user;
-    if (mask != NULL)
-        *mask = (int)len;
-
-#endif
 
     if (*fd != 0)
         return 0;
@@ -1429,7 +1098,6 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         /*
          * mainloop integration
          */
-#ifdef WEBSOCKETS_CHANGE_MODE_POLL_FD
 
     case LWS_CALLBACK_ADD_POLL_FD: {
         struct libwebsocket_pollargs *pa = (struct libwebsocket_pollargs *)in;
@@ -1466,63 +1134,23 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
             return LWS_EVENT_ERROR;
     }
 
-#else /* WEBSOCKETS_CHANGE_MODE_POLL_FD */
-
-    case LWS_CALLBACK_ADD_POLL_FD:
-        getpollfd(user, in, len, &fd, &mask);
-        mrp_debug("start polling fd %d for events 0x%x", fd, mask);
-        if (add_fd(ctx, fd, mask))
-            return LWS_EVENT_OK;
-        else
-            return LWS_EVENT_ERROR;
-
-    case LWS_CALLBACK_DEL_POLL_FD:
-        getpollfd(user, in, len, &fd, NULL);
-        mrp_debug("stop polling fd %d", fd);
-        if (del_fd(ctx, fd))
-            return LWS_EVENT_OK;
-        else
-            return LWS_EVENT_ERROR;
-
-    case LWS_CALLBACK_SET_MODE_POLL_FD:
-        getpollfd(user, in, len, &fd, &mask);
-        mrp_debug("enable poll events 0x%x for fd %d", mask, fd);
-        if (mod_fd(ctx, fd, mask, FALSE))
-            return LWS_EVENT_OK;
-        else
-            return LWS_EVENT_ERROR;
-
-    case LWS_CALLBACK_CLEAR_MODE_POLL_FD:
-        getpollfd(user, in, len, &fd, &mask);
-        mrp_debug("disable poll events 0x%x for fd %d", mask, fd);
-        if (mod_fd(ctx, fd, mask, TRUE))
-            return LWS_EVENT_OK;
-        else
-            return LWS_EVENT_ERROR;
-
-#endif /* WEBSOCKETS_CHANGE_MODE_POLL_FD */
-
     case LWS_CALLBACK_SERVER_WRITEABLE:
-#ifndef WEBSOCKETS_CLOSE_SESSION
         sck = find_pure_http(ctx, ws);
 
         if (sck == NULL) {
             mrp_debug("asking to close unassociated websocket %p", ws);
             return LWS_EVENT_CLOSE;
         }
-#endif
         mrp_debug("socket server side writeable again");
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_CLIENT_WRITEABLE:
-#ifndef WEBSOCKETS_CLOSE_SESSION
         sck = find_pure_http(ctx, ws);
 
         if (sck == NULL) {
             mrp_debug("asking to close unassociated websocket %p", ws);
             return LWS_EVENT_CLOSE;
         }
-#endif
         mrp_debug("socket client side writeable again");
         return LWS_EVENT_OK;
 
@@ -1560,10 +1188,8 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
          */
 
 
-#ifdef WEBSOCKETS_FILTER_HTTP_CONNECTION
     case LWS_CALLBACK_FILTER_HTTP_CONNECTION:
         return 0;
-#endif
 
     case LWS_CALLBACK_HTTP:
         uri = (const char *)in;
@@ -1629,7 +1255,6 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
 
         return status;
 
-#ifndef WEBSOCKETS_OLD
     case LWS_CALLBACK_HTTP_FILE_COMPLETION:
         uri = (const char *)in;
         if (uri != NULL)
@@ -1659,7 +1284,6 @@ static int http_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         }
 
         return LWS_EVENT_OK;
-#endif
 
         /*
          * events always routed to protocols[0]
@@ -1906,7 +1530,6 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_SERVER_WRITEABLE:
-#ifndef WEBSOCKETS_CLOSE_SESSION
         sck = *(wsl_sck_t **)user;
 
         if (sck == NULL) {
@@ -1914,12 +1537,10 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
 
             return LWS_EVENT_CLOSE;
         }
-#endif
         mrp_debug("socket server side writeable again");
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_CLIENT_WRITEABLE:
-#ifndef WEBSOCKETS_CLOSE_SESSION
         sck = *(wsl_sck_t **)user;
 
         if (sck == NULL) {
@@ -1927,7 +1548,6 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
 
             return LWS_EVENT_CLOSE;
         }
-#endif
         mrp_debug("socket client side writeable again");
         return LWS_EVENT_OK;
 
@@ -1944,30 +1564,12 @@ static int wsl_event(lws_ctx_t *ws_ctx, lws_t *ws, lws_event_t event,
  * logging
  */
 
-#ifndef WEBSOCKETS_OLD
-
-#ifdef WEBSOCKETS_LOG_WITH_LEVEL
 static void libwebsockets(int level, const char *line)
-#else
-static void libwebsockets(const char *line)
-#endif
 {
     const char *ts, *ll;
     const char *b, *e, *lvl;
     int         l, ls;
     uint32_t    mask;
-
-#ifdef WEBSOCKETS_LOG_WITH_LEVEL
-    MRP_UNUSED(level);
-#else
-    /*
-     * If our (shaky) configure-time check gives a false negative,
-     * we'll expect only line but will be passed both level and line.
-     * Try catching it instead of crashing on it here...
-     */
-    if (line < (const char *)(LLL_CLIENT << 3))
-        return;
-#endif
 
     if ((mask = mrp_log_get_mask()) == 0)
         return;
@@ -2083,7 +1685,6 @@ static void libwebsockets(const char *line)
         b   = line;
     }
 
-#ifdef WEBSOCKETS_LOG_WITH_LEVEL
     switch (level) {
     case LLL_ERR:     lvl = "e"; ls = 0; break;
     case LLL_WARN:    lvl = "w"; ls = 0; break;
@@ -2101,7 +1702,6 @@ static void libwebsockets(const char *line)
     b = line;
     while (*b == ' ' || *b == '\t')
         b++;
-#endif
 
     /* break the message to lines and pass it on to the murphy infra */
     e = strchr(b, '\n');
@@ -2136,15 +1736,3 @@ void wsl_set_loglevel(wsl_loglevel_t mask)
 {
     lws_set_log_level(mask, libwebsockets);
 }
-
-
-#else /* WEBSOCKETS_OLD */
-
-void wsl_set_loglevel(wsl_loglevel_t mask)
-{
-    MRP_UNUSED(mask);
-
-    mrp_log_warning("libwebsockets too old to redirect logs...");
-}
-
-#endif /* WEBSOCKETS_OLD */

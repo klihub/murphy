@@ -132,8 +132,6 @@ typedef enum {
  * logging levels
  */
 
-#ifndef WEBSOCKETS_OLD
-
 typedef enum {
     WSL_LOG_NONE    = 0x0,
     WSL_LOG_ERROR   = LLL_ERR,
@@ -148,25 +146,6 @@ typedef enum {
     WSL_LOG_EXTRA   = LLL_PARSER | LLL_HEADER | LLL_EXT | LLL_CLIENT,
     WSL_LOG_VERBOSE = WSL_LOG_ALL | WSL_LOG_EXTRA
 } wsl_loglevel_t;
-
-#else /* !WEBSOCKETS_OLD */
-
-typedef enum {
-    WSL_LOG_NONE    = 0x0,
-    WSL_LOG_ERROR   = 0x0,
-    WSL_LOG_WARNING = 0x0,
-    WSL_LOG_INFO    = 0x0,
-    WSL_LOG_DEBUG   = 0x0,
-    WSL_LOG_ALL     = 0x0,
-    WSL_LOG_PARSER  = 0x0,
-    WSL_LOG_HEADER  = 0x0,
-    WSL_LOG_EXT     = 0x0,
-    WSL_LOG_CLIENT  = 0x0,
-    WSL_LOG_EXTRA   = 0x0,
-    WSL_LOG_VERBOSE = 0x0,
-} wsl_loglevel_t;
-
-#endif /* !WEBSOCKETS_OLD */
 
 typedef enum {
     WSL_NO_SSL         = 0,              /* plain connection, no SSL */
