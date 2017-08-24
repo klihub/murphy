@@ -425,9 +425,28 @@ static int find_device(struct sockaddr *sa, char *buf, size_t size)
 }
 
 
+static lws_ext_t *default_extensions(void)
+{
+    static lws_ext_t exts[] = {
+        {
+            "permessage-deflate",
+            lws_extension_callback_pm_deflate,
+            "permessage-deflate"
+        },
+        {
+            "deflate-frame",
+            lws_extension_callback_pm_deflate,
+            "deflate_frame"
+        },
+        { NULL, NULL, NULL },
+    };
+
+    return exts;
+}
+
+
 wsl_ctx_t *wsl_create_context(mrp_mainloop_t *ml, wsl_ctx_cfg_t *cfg)
 {
-    lws_ext_t      *builtin = lws_get_internal_extensions();
     lws_cci_t       cci;
     wsl_ctx_t      *ctx;
     wsl_proto_t    *up, *http;
@@ -520,7 +539,7 @@ wsl_ctx_t *wsl_create_context(mrp_mainloop_t *ml, wsl_ctx_cfg_t *cfg)
         goto fail;
 
     cci.protocols  = lws_protos;
-    cci.extensions = builtin;
+    cci.extensions = NULL; /*default_extensions();*/
     cci.user       = ctx;
     cci.gid        = cfg->gid;
     cci.uid        = cfg->uid;
@@ -1096,7 +1115,8 @@ static int http_event(lws_t *ws, lws_event_t event,
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-        mrp_debug("client connection failed");
+        mrp_debug("client connection failed (%s)",
+                  in ? (char *)in : "unknown error");
         return LWS_EVENT_OK;
 
     case LWS_CALLBACK_RECEIVE:
@@ -1114,6 +1134,12 @@ static int http_event(lws_t *ws, lws_event_t event,
         /*
          * mainloop integration
          */
+
+    case LWS_CALLBACK_LOCK_POLL:
+        return LWS_EVENT_OK;
+
+    case LWS_CALLBACK_UNLOCK_POLL:
+        return LWS_EVENT_OK;
 
     case LWS_CALLBACK_ADD_POLL_FD: {
         struct lws_pollargs *pa = (struct lws_pollargs *)in;
@@ -1149,6 +1175,10 @@ static int http_event(lws_t *ws, lws_event_t event,
         else
             return LWS_EVENT_ERROR;
     }
+
+    case LWS_CALLBACK_SERVER_NEW_CLIENT_INSTANTIATED:
+        mrp_debug("new client has been instantiated");
+        return LWS_EVENT_OK;
 
     case LWS_CALLBACK_SERVER_WRITEABLE:
         sck = find_pure_http(ctx, ws);
