@@ -1871,11 +1871,12 @@ libdbus_transport_test_LDADD   = libmurphy-common.la \
 endif
 
 if SDBUS_ENABLED
-TESTS     += sdbus-test dbus-sdbus-test sdbus-transport-test sdbus-error-message
+#TESTS     += sdbus-test dbus-sdbus-test sdbus-transport-test sdbus-error-message
+TESTS     +=  dbus-sdbus-test sdbus-transport-test sdbus-error-message
 
-sdbus_test_SOURCES = common/tests/sdbus-test.c
-sdbus_test_CFLAGS  = $(WARNING_CFLAGS) $(AM_CFLAGS) $(SDBUS_CFLAGS)
-sdbus_test_LDADD   = libmurphy-common.la $(SDBUS_LIBS)
+#sdbus_test_SOURCES = common/tests/sdbus-test.c
+#sdbus_test_CFLAGS  = $(WARNING_CFLAGS) $(AM_CFLAGS) $(SDBUS_CFLAGS)
+#sdbus_test_LDADD   = libmurphy-common.la $(SDBUS_LIBS)
 
 dbus_sdbus_test_SOURCES = common/tests/dbus-sdbus-test.c
 dbus_sdbus_test_CFLAGS  = $(WARNING_CFLAGS) $(AM_CFLAGS) $(SDBUS_CFLAGS)

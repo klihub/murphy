@@ -4,8 +4,7 @@
 #include <murphy/common/mm.h>
 #include <murphy/common/mainloop.h>
 
-#include "sd-bus.h"
-#include "bus-message.h"
+#include <systemd/sd-bus.h>
 
 #define USEC_TO_MSEC(usec) ((unsigned int)((usec) / 1000))
 
