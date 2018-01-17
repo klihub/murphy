@@ -55,8 +55,8 @@ static int bus_query(void *user_data, struct pollfd *fds, int nfd,
         else
             *timeout = USEC_TO_MSEC(usec);
 
-        mrp_log_info("fd: %d, events: 0x%x, timeout: %u", fds[0].fd,
-                     fds[0].events, *timeout);
+        mrp_debug("fd: %d, events: 0x%x, timeout: %u", fds[0].fd,
+                  fds[0].events, *timeout);
     }
 
     return 1;
@@ -245,8 +245,13 @@ int main(int argc, char *argv[])
     /*sd_bus_add_object(bus, &slot, "/foo/bar", bus_method_cb, bus);*/
 #endif
 
+    if (sd_bus_request_name(bus, "sd.bus.test", 0) < 0)
+        mrp_log_error("failed to acquire name on bus...");
+
     while (sd_bus_process(bus, NULL) > 0)
-        sd_bus_flush(bus);
+        ;
+
+    sd_bus_release_name(bus, "sd-bus.test");
 
     b->bus = bus;
     b->ml  = ml;

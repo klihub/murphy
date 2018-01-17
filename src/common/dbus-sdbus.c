@@ -48,19 +48,6 @@
 /* XXX check these... */
 #define SDBUS_ERROR_FAILED   "org.DBus.error.failed"
 
-/* D-Bus name request flags and reply statuses. */
-#define SDBUS_NAME_REQUEST_REPLACE 0x2
-#define SDBUS_NAME_REQUEST_DONTQ   0x4
-
-#define SDBUS_NAME_STATUS_OWNER    0x1
-#define SDBUS_NAME_STATUS_QUEUING  0x2
-#define SDBUS_NAME_STATUS_EXISTS   0x3
-#define SDBUS_NAME_STATUS_GOTIT    0x4
-
-#define SDBUS_NAME_STATUS_RELEASED 0x1
-#define SDBUS_NAME_STATUS_UNKNOWN  0x2
-#define SDBUS_NAME_STATUS_FOREIGN  0x3
-
 #define USEC_TO_MSEC(usec) ((unsigned int)((usec) / 1000))
 #define MSEC_TO_USEC(msec) ((uint64_t)(msec) * 1000)
 
@@ -315,6 +302,8 @@ mrp_dbus_t *mrp_dbus_connect(mrp_mainloop_t *ml, const char *address,
     mrp_dbus_t        *dbus;
     sd_bus_slot       *slot;
 
+    mrp_debug("connection to address %s requested", address ? address: "-");
+
     if ((dbus = dbus_get(ml, address)) != NULL)
         return mrp_dbus_ref(dbus);
 
@@ -370,7 +359,7 @@ mrp_dbus_t *mrp_dbus_connect(mrp_mainloop_t *ml, const char *address,
      * set up our message dispatchers and take our name on the bus
      */
 
-    if (sd_bus_add_fallback(dbus->bus, &slot,"/", dispatch_method, dbus) != 0) {
+    if (sd_bus_add_fallback(dbus->bus, &slot, "/",dispatch_method, dbus) != 0) {
         mrp_dbus_error_set(errp, SDBUS_ERROR_FAILED,
                            "Failed to set up method dispatching.");
         goto fail;
@@ -438,39 +427,51 @@ int mrp_dbus_unref(mrp_dbus_t *dbus)
 int mrp_dbus_acquire_name(mrp_dbus_t *dbus, const char *name,
                           mrp_dbus_err_t *error)
 {
-    int flags = SDBUS_NAME_REQUEST_REPLACE | SDBUS_NAME_REQUEST_DONTQ;
-    int status;
+    mrp_debug("acquiring name '%s'...", name);
 
     mrp_dbus_error_init(error);
 
-    status = sd_bus_request_name(dbus->bus, name, flags);
-
-    if (status == SDBUS_NAME_STATUS_OWNER || status == SDBUS_NAME_STATUS_GOTIT)
-        return TRUE;
-    else {
+    if (sd_bus_request_name(dbus->bus, name, 0) < 0) {
         mrp_dbus_error_set(error, SDBUS_ERROR_FAILED, "failed to request name");
-
         return FALSE;
     }
+
+    /*
+     * Notes: (REALLY BAD VOODOO)
+     *   Failing to pump the bus until there are no further messages here
+     *   drives sd-bus crazy with sd_bus_get_timeout all the time returning
+     *   0 which then driver our mainloop (glue) into a practical busy-loop.
+     *
+     *   Hmmaybe we should use the async version with completion callback,
+     *   since I think now this seemingly synchronous function call can
+     *   result in signal/method call callback being triggered which will
+     *   be highly counter-intuitive and unexpected by the user.
+     *
+     *   BTW the same voodoo does not seem to be necessary when releasing
+     *   a name.
+     */
+
+    while (sd_bus_process(dbus->bus, NULL) > 0)
+        ;
+
+    return TRUE;
 }
 
 
 int mrp_dbus_release_name(mrp_dbus_t *dbus, const char *name,
                           mrp_dbus_err_t *error)
 {
-    int status;
+    mrp_debug("releasing name '%s'...", name);
 
     mrp_dbus_error_init(error);
 
-    status = sd_bus_release_name(dbus->bus, name);
-
-    if (status == SDBUS_NAME_STATUS_RELEASED)
-        return TRUE;
-    else {
+    if (sd_bus_release_name(dbus->bus, name) < 0) {
         mrp_dbus_error_set(error, SDBUS_ERROR_FAILED, "failed to release name");
 
         return FALSE;
     }
+    else
+        return TRUE;
 }
 
 
@@ -550,6 +551,8 @@ int mrp_dbus_follow_name(mrp_dbus_t *dbus, const char *name,
 {
     name_tracker_t *t;
 
+    mrp_debug("starting to track name '%s'...", name);
+
     if ((t = mrp_allocz(sizeof(*t))) != NULL) {
         if ((t->name = mrp_strdup(name)) != NULL) {
             t->cb        = cb;
@@ -585,6 +588,8 @@ int mrp_dbus_forget_name(mrp_dbus_t *dbus, const char *name,
 {
     mrp_list_hook_t *p, *n;
     name_tracker_t  *t;
+
+    mrp_debug("done with tracking name '%s'...", name);
 
     mrp_list_foreach(&dbus->name_trackers, p, n) {
         t = mrp_list_entry(p, name_tracker_t, hook);
@@ -808,6 +813,8 @@ static object_t *object_add(mrp_dbus_t *dbus, const char *path)
     object_t    *o;
     sd_bus_slot *slot;
 
+    mrp_debug("adding object %s...", path);
+
     o = mrp_alloc(sizeof(*o));
 
     if (o != NULL) {
@@ -820,7 +827,7 @@ static object_t *object_add(mrp_dbus_t *dbus, const char *path)
         }
 
         if (sd_bus_add_object(dbus->bus, &slot,
-                              o->path, dispatch_method, dbus) == 0) {
+                              o->path, dispatch_method, dbus) >= 0) {
             if (mrp_htbl_insert(dbus->objects, o->path, o)) {
                 o->slot = slot;
                 return o;
@@ -884,6 +891,8 @@ int mrp_dbus_export_method(mrp_dbus_t *dbus, const char *path,
     handler_list_t *methods;
     handler_t      *m;
 
+    mrp_debug("exporting method %s:%s.%s", path, interface, member);
+
     if (!object_ref(dbus, path))
         return FALSE;
 
@@ -916,6 +925,8 @@ int mrp_dbus_remove_method(mrp_dbus_t *dbus, const char *path,
     handler_list_t *methods;
     handler_t      *m;
 
+    mrp_debug("removing method %s:%s.%s", path, interface, member);
+
     if ((methods = mrp_htbl_lookup(dbus->methods, (void *)member)) == NULL)
         return FALSE;
 
@@ -940,6 +951,10 @@ int mrp_dbus_add_signal_handler(mrp_dbus_t *dbus, const char *sender,
 {
     handler_list_t *signals;
     handler_t      *s;
+
+    mrp_debug("adding signal handler for %s/%s:%s.%s",
+              sender ? sender : "-", path ? path : "-",
+              interface ? interface : "-", member ? member : "-");
 
     if ((signals = mrp_htbl_lookup(dbus->signals, (void *)member)) == NULL) {
         if ((signals = handler_list_alloc(member)) == NULL)
@@ -975,6 +990,10 @@ int mrp_dbus_del_signal_handler(mrp_dbus_t *dbus, const char *sender,
     handler_t      *s;
 
     MRP_UNUSED(sender);
+
+    mrp_debug("removing signal handler for %s/%s:%s.%s",
+              sender ? sender : "-", path ? path : "-",
+              interface ? interface : "-", member ? member : "-");
 
     if ((signals = mrp_htbl_lookup(dbus->signals, (void *)member)) == NULL)
         return FALSE;
@@ -1175,6 +1194,8 @@ int mrp_dbus_subscribe_signal(mrp_dbus_t *dbus,
     p = message_filter(key, sizeof(key), sender, path, interface, member, ap);
     va_end(ap);
 
+    mrp_debug("subscribing for signals %s", p ? p : "-");
+
     if (p == NULL)
         return FALSE;
 
@@ -1212,6 +1233,8 @@ int mrp_dbus_unsubscribe_signal(mrp_dbus_t *dbus,
     va_start(ap, member);
     p = message_filter(key, sizeof(key), sender, path, interface, member, ap);
     va_end(ap);
+
+    mrp_debug("unsubscribing from signals %s", p ? p : "-");
 
     if (p == NULL)
         return FALSE;
@@ -1594,12 +1617,13 @@ int32_t mrp_dbus_call(mrp_dbus_t *dbus, const char *dest, const char *path,
 
 int mrp_dbus_send_msg(mrp_dbus_t *dbus, mrp_dbus_msg_t *m)
 {
+    uint64_t cookie;
     /*bus_message_dump(m->msg);*/
 
-    if (sd_bus_send(dbus->bus, m->msg, NULL) == 0)
-        return TRUE;
-    else
+    if (sd_bus_send(dbus->bus, m->msg, &cookie) < 0)
         return FALSE;
+    else
+        return TRUE;
 }
 
 
