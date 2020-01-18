@@ -1,0 +1,25 @@
+name: C/C++ CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: install-dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install git make gcc flex bison \
+            autoconf automake libtool \
+            libjson-c-dev lua5.2 liblua5.2-dev
+    - name: configure
+      run: ./bootstrap && ./configure --with-dynamic-plugins=domain-control
+    - name: make
+      run: make
+#    - name: make check
+#      run: make check
+#    - name: make distcheck
+#      run: make distcheck
