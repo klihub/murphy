@@ -1754,14 +1754,20 @@ TESTS     += parser-test
 
 # parser test
 parser_test_SOURCES = \
+		plugins/plugin-lua.c \
 		resolver/tests/parser-test.c
 parser_test_CFLAGS  = \
 		$(AM_CFLAGS) \
-		$(WARNING_CFLAGS) $(JSON_CFLAGS)
+		$(WARNING_CFLAGS) \
+		$(JSON_CFLAGS) \
+		-D__MURPHY_BUILTIN_PLUGIN__ $(LUA_CFLAGS)
 parser_test_LDADD   = libmurphy-resolver.la \
+		libmurphy-core.la \
 		libmqi.la \
-        libmdb.la \
-        libmurphy-common.la
+		libmdb.la \
+		libmurphy-common.la \
+		$(JSON_LIBS) \
+		$(LUA_LIBS)
 
 TESTS     += mm-test hash-test hash12-test msg-test transport-test \
 		internal-transport-test process-watch-test native-test \

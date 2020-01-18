@@ -40,6 +40,8 @@
 
 typedef struct {
     const char     *file;
+    const char     *lua_file;
+    mrp_context_t  *ctx;
     mrp_resolver_t *r;
     int             log_mask;
     const char     *log_target;
@@ -59,7 +61,8 @@ static void print_usage(const char *argv0, int exit_code, const char *fmt, ...)
 
     printf("usage: %s [options] [transport-address]\n\n"
            "The possible options are:\n"
-           "  -f, --file                     input file to user\n"
+           "  -f, --file                     input file to use\n"
+           "  -L, --lua-file                 lua plugin config to use\n"
            "  -t, --log-target=TARGET        log target to use\n"
            "      TARGET is one of stderr,stdout,syslog, or a logfile path\n"
            "  -l, --log-level=LEVELS         logging level to use\n"
@@ -91,6 +94,7 @@ int parse_cmdline(context_t *ctx, int argc, char **argv)
 #   define OPTIONS "f:l:t:d:vh"
     struct option options[] = {
         { "file"      , required_argument, NULL, 'f' },
+        { "lua-file"  , optional_argument, NULL, 'L' },
         { "log-level" , required_argument, NULL, 'l' },
         { "log-target", required_argument, NULL, 't' },
         { "verbose"   , optional_argument, NULL, 'v' },
@@ -107,6 +111,10 @@ int parse_cmdline(context_t *ctx, int argc, char **argv)
         switch (opt) {
         case 'f':
             ctx->file = optarg;
+            break;
+
+        case 'L':
+            ctx->lua_file = optarg;
             break;
 
         case 'v':
@@ -150,6 +158,7 @@ int main(int argc, char *argv[])
     context_t  c;
     int        i;
     char      *target;
+    mrp_plugin_arg_t args[2];
 
     if (!parse_cmdline(&c, argc, argv))
         exit(1);
@@ -160,7 +169,23 @@ int main(int argc, char *argv[])
     if (c.debug)
         mrp_debug_enable(TRUE);
 
-    c.r = mrp_resolver_parse(NULL, NULL, c.file);
+    c.ctx = mrp_context_create();
+
+    if (c.lua_file != NULL) {
+        args[0].type = MRP_PLUGIN_ARG_TYPE_STRING;
+        args[0].key  = "config";
+        args[0].str  = "sample-config/main.cfg";
+        mrp_load_plugin(c.ctx, "lua", NULL, args, 1);
+
+        if (mrp_start_plugins(c.ctx))
+            mrp_log_info("Successfully started all loaded plugins.");
+        else {
+            mrp_log_error("Some plugins failed to start.");
+            exit(1);
+        }
+    }
+
+    c.r = mrp_resolver_parse(NULL, c.ctx, c.file);
 
     if (c.r == NULL)
         mrp_log_error("Failed to parse input file '%s'.", c.file);
