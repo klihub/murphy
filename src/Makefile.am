@@ -1825,7 +1825,7 @@ native_test_LDADD   = libmurphy-common.la
 # transport test
 transport_test_SOURCES = common/tests/transport-test.c
 transport_test_CFLAGS  = $(WARNING_CFLAGS) $(AM_CFLAGS)
-transport_test_LDADD   = libmurphy-common.la
+transport_test_LDADD   = libmurphy-common.la $(JSON_LIBS)
 
 # internal transport test
 internal_transport_test_SOURCES = common/tests/internal-transport-test.c
